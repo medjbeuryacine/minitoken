@@ -121,19 +121,24 @@ Chaque fait retenu dans `user_memory` (et chaque souvenir vectorisé) a un `scop
 - `"global"` — vrai peu importe l'agent auquel l'utilisateur s'adresse (préférences de communication, contexte stable)
 - le nom d'un agent (ex: `"coach_ia"`, `"mon_programme"`) — pertinent uniquement pour cet agent précis
 
-Quand un agent appelle `get_context()`, il ne récupère que les faits `global` + ceux de son propre scope — jamais ceux d'un autre agent. La classification `global` / spécifique est faite automatiquement par le LLM d'extraction à chaque échange.
+Quand un agent appelle `get_context()`, il ne récupère que les faits `global` + ceux de son propre scope — jamais ceux d'un autre agent. La classification `global` / spécifique est faite automatiquement par un LLM léger à chaque échange, guidé par des exemples dans son prompt pour rester fiable même sur de petits modèles.
 
 ## Architecture interne
 
-```
 minitoken/
-├── config.py            # MinitokenConfig — toute la configuration du développeur
-├── client.py             # MinitokenClient — point d'entrée public
-├── providers/             # adaptateurs LLM (Groq/OpenAI/NVIDIA + Anthropic)
-├── database/              # modèles, accès DB, migration
-├── memory/                # les 4 niveaux : short_term, summary, structured, vector
-└── token_budget/          # comptage + réduction si dépassement du budget
-```
+├── config.py # MinitokenConfig — toute la configuration du développeur
+├── client.py # MinitokenClient — point d'entrée public
+├── providers/ # adaptateurs LLM (Groq/OpenAI/NVIDIA + Anthropic)
+├── database/
+│ ├── models.py # définition des 3 tables
+│ ├── repository.py # lecture/écriture, filtrage par scope
+│ └── migrate.py # création tables + activation pgvector (programmatique, pas Alembic)
+├── memory/ # les 4 niveaux : short_term, summary, structured, vector
+└── token_budget/ # comptage + réduction si dépassement du budget
+
+### Pourquoi pas de fichiers Alembic classiques
+
+La structure réelle des tables dépend de la config du développeur (noms de tables `users`/`conversations`, dimension du vecteur selon l'embedder choisi) — des fichiers de migration figés à l'avance ne pourraient pas s'adapter à chaque projet différent. `migrate.py` applique donc la migration de façon programmatique, à partir de la config réelle fournie par `MinitokenClient`.
 
 ## Licence
 

@@ -60,9 +60,13 @@ class MinitokenClient:
         self.embedder = embedder or get_embedder(config)
 
     def initialize(self) -> None:
-        """À appeler une fois, au démarrage de l'application hôte, pour
-        créer les tables de minitoken si elles n'existent pas déjà."""
-        self.repository.create_tables()
+        """À appeler une fois, au démarrage de l'application hôte : active
+        pgvector, crée les 3 tables de minitoken si elles n'existent pas
+        déjà, et ajoute la colonne embedding à la bonne dimension selon
+        l'embedder configuré."""
+        from minitoken.database.migrate import apply_migrations
+
+        apply_migrations(repository=self.repository, embedder=self.embedder)
 
     # ------------------------------------------------------------------
     # Avant la réponse principale : construire le contexte optimisé

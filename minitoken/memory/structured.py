@@ -21,11 +21,20 @@ l'utilisateur (préférences, contexte de vie/travail, décisions, objectifs \
 stables) — ignore les détails ponctuels de la discussion en cours.
 
 Pour chaque fait, indique un scope :
-- "global" si le fait concerne l'utilisateur en général, peu importe le \
-sujet ou l'agent auquel il s'adresse (préférences de communication, \
-contexte personnel/professionnel stable).
-- "agent_specific" si le fait ne concerne QUE le sujet traité dans cette \
-conversation précise, et n'a pas de sens pour un autre agent.
+- "global" si le fait concerne l'utilisateur en général, INDÉPENDAMMENT du \
+sujet de la conversation (ex: préférences de communication, langue \
+parlée, contexte professionnel, personnalité).
+- "agent_specific" si le fait est un DÉTAIL ou une DONNÉE propre au sujet \
+traité dans CETTE conversation précise, qui n'aurait aucun sens hors de \
+ce contexte (ex: objectifs sportifs, données de santé, informations \
+métier propres à un domaine particulier).
+
+Exemples :
+- "Je préfère des réponses courtes" -> global
+- "Je travaille en solo comme développeur" -> global
+- "Mon objectif est la prise de masse" -> agent_specific
+- "Je m'entraîne 4 fois par semaine" -> agent_specific
+- "J'ai mal au genou droit" -> agent_specific
 
 S'il n'y a AUCUN fait durable à extraire (échange de politesse, question \
 ponctuelle sans info nouvelle), réponds avec une liste vide.

@@ -11,11 +11,20 @@ passe toujours par MinitokenRepository.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine
+from sqlalchemy import MetaData, Table, create_engine
+from sqlalchemy.dialects.postgresql.base import ischema_names
 from sqlalchemy.orm import Session, sessionmaker
+
+from pgvector.sqlalchemy import Vector
 
 from minitoken.config import MinitokenConfig
 from minitoken.database.models import MinitokenModels, build_models
+
+# Enregistre le type "vector" (pgvector) auprès de SQLAlchemy, pour que
+# la réflexion automatique (autoload_with) reconnaisse correctement cette
+# colonne et expose les méthodes de similarité (cosine_distance, etc.)
+# au lieu de la traiter comme un type générique inconnu.
+ischema_names["vector"] = Vector
 
 
 class MinitokenRepository:
@@ -28,10 +37,25 @@ class MinitokenRepository:
     def create_tables(self) -> None:
         """
         Crée les 3 tables de minitoken dans la base du projet hôte, si
-        elles n'existent pas déjà. Ne touche jamais aux tables
-        users/conversations existantes — seulement à celles définies dans
-        models.py (create_all ne crée que les tables rattachées à ce Base).
+        elles n'existent pas déjà. Reflète d'abord les tables users/
+        conversations existantes dans la même metadata, pour que SQLAlchemy
+        puisse résoudre les clés étrangères vers elles.
         """
+        from sqlalchemy import Table
+
+        Table(
+            self.config.users_table,
+            self.models.Base.metadata,
+            autoload_with=self._engine,
+            extend_existing=True,
+        )
+        Table(
+            self.config.conversations_table,
+            self.models.Base.metadata,
+            autoload_with=self._engine,
+            extend_existing=True,
+        )
+
         self.models.Base.metadata.create_all(self._engine)
 
     def _session(self) -> Session:
@@ -175,11 +199,15 @@ class MinitokenRepository:
             session.flush()
 
             # La colonne vector est ajoutée par migration (dimension
-            # dépendante du modèle d'embedding) ; on l'écrit ici en SQL
-            # brut pour ne pas coupler models.py à une dimension fixe.
+            # dépendante du modèle d'embedding) ; on relit la structure
+            # réelle de la table (autoload) car le modèle Python ne
+            # connaît pas cette colonne ajoutée en SQL brut.
+            reflected_table = Table(
+                "memory_embeddings", MetaData(), autoload_with=self._engine
+            )
             session.execute(
-                self.models.MemoryEmbedding.__table__.update()
-                .where(self.models.MemoryEmbedding.id == record.id)
+                reflected_table.update()
+                .where(reflected_table.c.id == record.id)
                 .values(embedding=embedding)
             )
             session.commit()
@@ -201,7 +229,7 @@ class MinitokenRepository:
         parlé).
         """
         with self._session() as session:
-            table = self.models.MemoryEmbedding.__table__
+            table = Table("memory_embeddings", MetaData(), autoload_with=self._engine)
             return session.execute(
                 table.select()
                 .where(table.c.user_id == user_id, table.c.scope.in_(scopes))
