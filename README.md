@@ -126,15 +126,16 @@ Quand un agent appelle `get_context()`, il ne récupère que les faits `global` 
 ## Architecture interne
 
 minitoken/
-├── config.py # MinitokenConfig — toute la configuration du développeur
-├── client.py # MinitokenClient — point d'entrée public
-├── providers/ # adaptateurs LLM (Groq/OpenAI/NVIDIA + Anthropic)
+├── config.py                 # MinitokenConfig — toute la configuration du développeur
+├── client.py                 # MinitokenClient — point d'entrée public
+├── providers/                # Adaptateurs LLM (Groq/OpenAI/NVIDIA + Anthropic)
 ├── database/
-│ ├── models.py # définition des 3 tables
-│ ├── repository.py # lecture/écriture, filtrage par scope
-│ └── migrate.py # création tables + activation pgvector (programmatique, pas Alembic)
-├── memory/ # les 4 niveaux : short_term, summary, structured, vector
-└── token_budget/ # comptage + réduction si dépassement du budget
+│   ├── models.py             # Définition des 3 tables
+│   ├── repository.py         # Lecture/écriture, filtrage par scope
+│   └── migrate.py            # Création des tables + activation de pgvector
+│                             # (programmatiquement, sans Alembic)
+├── memory/                   # Les 4 niveaux : short_term, summary, structured, vector
+└── token_budget/             # Comptage + réduction si dépassement du budget
 
 ### Pourquoi pas de fichiers Alembic classiques
 
