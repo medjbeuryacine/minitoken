@@ -1,44 +1,46 @@
 """
 Adaptateur pour tous les providers "OpenAI-compatible" : Groq, OpenAI,
-NVIDIA NIM, et tout autre provider exposant une API au format OpenAI
+NVIDIA NIM, ou tout autre service exposant une API au format OpenAI
 (/chat/completions).
 
-Un seul adaptateur suffit pour ces trois providers car ils partagent le
-même format de requête/réponse — seule la base_url (et parfois le style
-exact du modèle) change.
+Un seul adaptateur suffit pour n'importe quel provider de ce type — la
+seule chose qui change d'un service à l'autre est la `base_url`. On ne
+maintient pas de liste fermée de providers "connus" : le développeur
+donne directement l'URL de base de son fournisseur (ex:
+"https://api.groq.com/openai/v1"), et minitoken fonctionne avec, tant que
+ce fournisseur respecte le format OpenAI.
 """
 
 from minitoken.providers.base import ChatMessage, CompletionResult, LLMProvider
 
-# Base URL par provider connu. Un développeur peut aussi passer une
-# base_url personnalisée pour un provider OpenAI-compatible non listé ici.
-_KNOWN_BASE_URLS = {
-    "groq": "https://api.groq.com/openai/v1",
-    "openai": "https://api.openai.com/v1",
-    "nvidia": "https://integrate.api.nvidia.com/v1",
-}
-
 
 class OpenAICompatibleProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str, provider_name: str, base_url: str | None = None):
+    def __init__(self, api_key: str, model: str, base_url: str, provider_label: str | None = None):
+        """
+        base_url : l'URL de base de votre fournisseur OpenAI-compatible
+                   (ex: "https://api.groq.com/openai/v1",
+                   "https://api.openai.com/v1",
+                   "https://integrate.api.nvidia.com/v1", ou toute autre
+                   API respectant le format OpenAI).
+        provider_label : nom libre, uniquement informatif (logs, messages
+                   d'erreur) — n'affecte pas le comportement.
+        """
         super().__init__(api_key=api_key, model=model)
 
-        resolved_base_url = base_url or _KNOWN_BASE_URLS.get(provider_name)
-        if resolved_base_url is None:
+        if not base_url:
             raise ValueError(
-                f"Provider '{provider_name}' inconnu et aucune base_url fournie. "
-                f"Providers connus : {list(_KNOWN_BASE_URLS)}. "
-                "Pour un provider OpenAI-compatible non listé, passez base_url explicitement."
+                "base_url est obligatoire : indiquez l'URL de base de votre "
+                "fournisseur OpenAI-compatible (ex: 'https://api.groq.com/openai/v1')."
             )
 
-        self.provider_name = provider_name
-        self.base_url = resolved_base_url
+        self.base_url = base_url
+        self.provider_label = provider_label or base_url
 
         # Import différé : on évite de forcer la dépendance `openai` si le
         # développeur n'utilise que le provider Anthropic, par exemple.
         from openai import OpenAI
 
-        self._client = OpenAI(api_key=api_key, base_url=resolved_base_url)
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
 
         # Tokenizer réel si disponible pour ce modèle (voir _resolve_tokenizer).
         # Sinon, count_tokens() retombe sur une approximation documentée.

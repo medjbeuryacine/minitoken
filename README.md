@@ -17,6 +17,30 @@ minitoken réduit le nombre de tokens envoyés à un LLM à chaque appel, sans p
 - **Léger** : uniquement PostgreSQL + pgvector, aucune dépendance lourde (pas de Neo4j, pas de service tiers obligatoire)
 - **Gratuit par défaut** : embeddings calculés localement (`sentence-transformers`), aucun appel API payant requis pour la mémoire vectorielle
 
+## Configurer un provider
+
+minitoken n'impose aucune liste fermée de fournisseurs. Pour tout provider compatible OpenAI (Groq, OpenAI, NVIDIA NIM, ou n'importe quel autre service exposant `/chat/completions` au format OpenAI), indiquez son `base_url` — c'est cette URL, pas le nom du provider, qui détermine où va réellement l'appel :
+
+| Fournisseur | base_url |
+|---|---|
+| Groq | `https://api.groq.com/openai/v1` |
+| OpenAI | `https://api.openai.com/v1` |
+| NVIDIA NIM | `https://integrate.api.nvidia.com/v1` |
+| Autre fournisseur OpenAI-compatible | l'URL de base fournie par ce service |
+
+Seule exception : `provider="anthropic"` utilise l'API native de Claude (SDK `anthropic`), aucun `base_url` n'est requis dans ce cas.
+
+```python
+# Réponses via Groq, extraction via un modèle plus léger sur le même Groq
+response_provider="groq",
+response_base_url="https://api.groq.com/openai/v1",
+
+# Ou : réponses via Claude
+response_provider="anthropic",
+response_model="claude-sonnet-4-5",
+# pas de response_base_url nécessaire ici
+```
+
 ## Pré-requis
 
 minitoken s'installe **dans un projet existant**. Il a besoin de deux tables déjà présentes dans votre base de données :
@@ -68,13 +92,15 @@ config = MinitokenConfig(
     conversations_table="conversations",
     conversations_id_column="id",
 
-    response_provider="groq",
+    response_provider="groq",  # étiquette libre, informative (logs/erreurs)
     response_model="llama-3.3-70b-versatile",
     response_api_key="gsk_...",
+    response_base_url="https://api.groq.com/openai/v1",  # détermine le vrai fournisseur appelé
 
     extraction_provider="groq",
     extraction_model="llama-3.1-8b-instant",  # modèle plus léger pour le résumé/l'extraction
     extraction_api_key="gsk_...",
+    extraction_base_url="https://api.groq.com/openai/v1",
 
     embedding_provider="local",  # gratuit, aucune clé requise
     token_budget_max=8000,

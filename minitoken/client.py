@@ -49,12 +49,14 @@ class MinitokenClient:
             provider_name=config.response_provider,
             model=config.response_model,
             api_key=config.response_api_key,
+            base_url=config.response_base_url,
         )
 
         self.extraction_provider = extraction_provider or build_provider(
             provider_name=config.extraction_provider,
             model=config.extraction_model,
             api_key=config.extraction_api_key,
+            base_url=config.extraction_base_url,
         )
 
         self.embedder = embedder or get_embedder(config)
