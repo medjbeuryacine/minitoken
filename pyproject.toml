@@ -1,0 +1,43 @@
+[project]
+name = "minitoken"
+version = "0.1.0"
+description = "Mémoire conversationnelle multi-provider, multi-user, multi-agent, avec gestion de budget de tokens — léger, self-hosted sur Postgres+pgvector."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Yacine" },
+]
+keywords = ["llm", "memory", "tokens", "conversation", "agent", "rag", "pgvector"]
+
+# Dépendances requises dans tous les cas (coeur du package).
+dependencies = [
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
+    "pgvector>=0.2",
+    "alembic>=1.13",
+]
+
+# Dépendances optionnelles : le développeur installe seulement ce dont il
+# a besoin (ex: `pip install minitoken[groq]` pour Groq uniquement).
+[project.optional-dependencies]
+openai-compatible = ["openai>=1.0"]      # Groq, OpenAI, NVIDIA
+anthropic = ["anthropic>=0.30"]
+local-embeddings = ["sentence-transformers>=2.7"]
+huggingface-tokenizers = ["transformers>=4.40"]  # comptage tokens précis Llama/Qwen
+all = [
+    "openai>=1.0",
+    "anthropic>=0.30",
+    "sentence-transformers>=2.7",
+    "transformers>=4.40",
+]
+
+[project.urls]
+Repository = "https://github.com/MassVolumePower/minitoken"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["minitoken*"]
