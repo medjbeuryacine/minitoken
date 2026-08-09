@@ -125,6 +125,7 @@ Quand un agent appelle `get_context()`, il ne récupère que les faits `global` 
 
 ## Architecture interne
 
+```text
 minitoken/
 ├── config.py                 # MinitokenConfig — toute la configuration du développeur
 ├── client.py                 # MinitokenClient — point d'entrée public
@@ -136,10 +137,13 @@ minitoken/
 │                             # (programmatiquement, sans Alembic)
 ├── memory/                   # Les 4 niveaux : short_term, summary, structured, vector
 └── token_budget/             # Comptage + réduction si dépassement du budget
+```
 
 ### Pourquoi pas de fichiers Alembic classiques
 
-La structure réelle des tables dépend de la config du développeur (noms de tables `users`/`conversations`, dimension du vecteur selon l'embedder choisi) — des fichiers de migration figés à l'avance ne pourraient pas s'adapter à chaque projet différent. `migrate.py` applique donc la migration de façon programmatique, à partir de la config réelle fournie par `MinitokenClient`.
+La structure réelle des tables dépend de la config du développeur (noms de tables `users`/`conversations`, dimension du vecteur selon l'embedder choisi) — des fichiers de migration figés à l'avance ne pourraient pas s'adapter à chaque projet différent.
+
+`migrate.py` applique donc la migration de façon programmatique, à partir de la config réelle fournie par `MinitokenClient`.
 
 ## Licence
 
