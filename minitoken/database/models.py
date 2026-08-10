@@ -69,7 +69,7 @@ def build_models(config: MinitokenConfig) -> MinitokenModels:
 
         conversation_id = Column(
             UUID(as_uuid=True),
-            ForeignKey(conversations_fk_target),
+            ForeignKey(conversations_fk_target, ondelete="CASCADE"),
             nullable=False,
             index=True,
         )
@@ -99,7 +99,7 @@ def build_models(config: MinitokenConfig) -> MinitokenModels:
 
         # Traçabilité uniquement — pas une contrainte de filtrage.
         source_conversation_id = Column(
-            UUID(as_uuid=True), ForeignKey(conversations_fk_target), nullable=True
+            UUID(as_uuid=True), ForeignKey(conversations_fk_target, ondelete="SET NULL"), nullable=True
         )
 
         confidence = Column(Integer, nullable=True)  # 0-100, optionnel
@@ -118,7 +118,7 @@ def build_models(config: MinitokenConfig) -> MinitokenModels:
 
         # Traçabilité uniquement, nullable.
         conversation_id = Column(
-            UUID(as_uuid=True), ForeignKey(conversations_fk_target), nullable=True
+            UUID(as_uuid=True), ForeignKey(conversations_fk_target, ondelete="SET NULL"), nullable=True
         )
 
         scope = Column(String(100), nullable=False, default="global", index=True)
