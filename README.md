@@ -39,7 +39,7 @@ response_base_url="https://api.groq.com/openai/v1",
 response_provider="anthropic",
 response_model="claude-sonnet-4-5",
 # pas de response_base_url nécessaire ici
-```
+``` 
 
 ## Pré-requis
 

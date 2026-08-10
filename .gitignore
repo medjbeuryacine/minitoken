@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 venv/
 test_minitoken.py
+test_minitoken_strict.py

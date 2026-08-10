@@ -30,7 +30,7 @@ class MinitokenClient:
         config: MinitokenConfig,
         *,
         repository: MinitokenRepository | None = None,
-        response_provider: LLMProvider | None = None,
+        token_counter_provider: LLMProvider | None = None,
         extraction_provider: LLMProvider | None = None,
         embedder: Embedder | None = None,
     ):
@@ -45,11 +45,11 @@ class MinitokenClient:
 
         self.repository = repository or MinitokenRepository(config)
 
-        self.response_provider = response_provider or build_provider(
-            provider_name=config.response_provider,
-            model=config.response_model,
-            api_key=config.response_api_key,
-            base_url=config.response_base_url,
+        self.token_counter_provider = token_counter_provider or build_provider(
+            provider_name=config.token_counter_provider,
+            model=config.token_counter_model,
+            api_key=config.token_counter_api_key,
+            base_url=config.token_counter_base_url,
         )
 
         self.extraction_provider = extraction_provider or build_provider(
@@ -121,7 +121,7 @@ class MinitokenClient:
         )
 
         return trim_to_budget(
-            provider=self.response_provider,
+            provider=self.token_counter_provider,
             bundle=bundle,
             budget_max=self.config.token_budget_max,
         )
@@ -154,65 +154,81 @@ class MinitokenClient:
         user_memory, sans lever d'exception qui remonterait jusqu'à
         l'appelant (voir memory/structured.py).
         """
-        conversation_memory = self.repository.get_conversation_memory(conversation_id)
-        message_count_at_last_summary = (
-            conversation_memory.message_count_at_last_summary if conversation_memory else 0
-        )
-        existing_summary = conversation_memory.summary if conversation_memory else ""
-        existing_state = conversation_memory.conversation_state if conversation_memory else {}
+        try:
+            conversation_memory = self.repository.get_conversation_memory(conversation_id)
+            message_count_at_last_summary = (
+                conversation_memory.message_count_at_last_summary if conversation_memory else 0
+            )
+            existing_summary = conversation_memory.summary if conversation_memory else ""
+            existing_state = conversation_memory.conversation_state if conversation_memory else {}
 
-        if short_term.needs_summarization(
-            total_message_count=len(all_messages),
-            message_count_at_last_summary=message_count_at_last_summary,
-            keep_recent_count=keep_recent_count,
-            resummarize_every=resummarize_every,
-        ):
-            window = short_term.split_recent_messages(
-                all_messages=all_messages, keep_recent_count=keep_recent_count
-            )
-            new_summary = summary.update_summary(
-                provider=self.extraction_provider,
-                existing_summary=existing_summary,
-                messages_to_summarize=window.messages_to_summarize,
-            )
-            new_summary = summary.recompress_if_too_long(
-                provider=self.extraction_provider,
-                summary=new_summary,
-                max_tokens=summary_max_tokens,
-            )
+            if short_term.needs_summarization(
+                total_message_count=len(all_messages),
+                message_count_at_last_summary=message_count_at_last_summary,
+                keep_recent_count=keep_recent_count,
+                resummarize_every=resummarize_every,
+            ):
+                window = short_term.split_recent_messages(
+                    all_messages=all_messages, keep_recent_count=keep_recent_count
+                )
+                new_summary = summary.update_summary(
+                    provider=self.extraction_provider,
+                    existing_summary=existing_summary,
+                    messages_to_summarize=window.messages_to_summarize,
+                )
+                new_summary = summary.recompress_if_too_long(
+                    provider=self.extraction_provider,
+                    summary=new_summary,
+                    max_tokens=summary_max_tokens,
+                )
 
-            self.repository.upsert_conversation_memory(
+                self.repository.upsert_conversation_memory(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    summary=new_summary,
+                    conversation_state=existing_state,
+                    message_count_at_last_summary=len(all_messages),
+                )
+        except Exception:
+            # Le résumé n'a pas pu être mis à jour (panne LLM, réseau...).
+            # On continue quand même — ce n'est pas critique, la
+            # conversation reste utilisable, le résumé sera retenté au
+            # prochain échange.
+            pass
+
+        try:
+            extracted_facts = structured.extract_facts(
+                provider=self.extraction_provider,
+                current_agent_scope=agent_scope,
+                user_message=user_message,
+                assistant_response=assistant_response,
+            )
+            for fact in extracted_facts:
+                self.repository.add_user_fact(
+                    user_id=user_id,
+                    fact=fact.fact,
+                    scope=fact.scope,
+                    category=fact.category,
+                    source_conversation_id=conversation_id,
+                )
+        except Exception:
+            # L'extraction de faits n'a pas pu se faire (panne LLM...).
+            # On continue quand même, même logique que ci-dessus.
+            pass
+        try:
+            exchange_text = f"User: {user_message}\nAssistant: {assistant_response}"
+            embedding = self.embedder.embed(exchange_text)
+            self.repository.add_memory_embedding(
+                user_id=user_id,
+                content=exchange_text,
+                scope=agent_scope,
+                embedding=embedding,
                 conversation_id=conversation_id,
-                user_id=user_id,
-                summary=new_summary,
-                conversation_state=existing_state,
-                message_count_at_last_summary=len(all_messages),
             )
-
-        extracted_facts = structured.extract_facts(
-            provider=self.extraction_provider,
-            current_agent_scope=agent_scope,
-            user_message=user_message,
-            assistant_response=assistant_response,
-        )
-        for fact in extracted_facts:
-            self.repository.add_user_fact(
-                user_id=user_id,
-                fact=fact.fact,
-                scope=fact.scope,
-                category=fact.category,
-                source_conversation_id=conversation_id,
-            )
-
-        exchange_text = f"User: {user_message}\nAssistant: {assistant_response}"
-        embedding = self.embedder.embed(exchange_text)
-        self.repository.add_memory_embedding(
-            user_id=user_id,
-            content=exchange_text,
-            scope=agent_scope,
-            embedding=embedding,
-            conversation_id=conversation_id,
-        )
+        except Exception:
+            # Le stockage vectoriel a échoué (embedder local en panne,
+            # base indisponible...). On continue quand même.
+            pass
 
     # ------------------------------------------------------------------
 

@@ -16,7 +16,7 @@ EmbeddingProviderName = Literal["local", "openai"]
 # libre ("groq", "openai", "nvidia", "mistral", ou n'importe quel autre).
 # Seule la valeur "anthropic" a un traitement spécial (API native Claude,
 # non OpenAI-compatible). Tout le reste est traité comme OpenAI-compatible
-# et nécessite un base_url correspondant (voir response_base_url /
+# et nécessite un base_url correspondant (voir token_counter_base_url /
 # extraction_base_url ci-dessous).
 
 
@@ -32,20 +32,21 @@ class MinitokenConfig:
     conversations_table: str
     conversations_id_column: str
 
-    # --- Provider utilisé pour générer les réponses principales ---
-    # response_provider : nom libre ("groq", "openai", "nvidia", ...) sauf
-    # "anthropic" qui a un traitement spécifique. Sert uniquement à
-    # étiqueter/logger, et à choisir la branche Anthropic vs
-    # OpenAI-compatible — pas à deviner une URL.
-    response_provider: str
-    response_model: str
-    response_api_key: str
+    # --- Provider utilisé UNIQUEMENT pour compter les tokens (jamais pour
+    # générer du texte) — sert à mesurer avec le bon tokenizer si le
+    # contexte assemblé (résumé + faits + messages) rentre dans
+    # token_budget_max. Doit correspondre au modèle réellement utilisé
+    # pour générer les réponses côté application (ex: le même modèle que
+    # dans votre graph LangGraph), pour que le comptage soit exact.
+    token_counter_provider: str
+    token_counter_model: str
+    token_counter_api_key: str
 
     # --- Provider utilisé pour le résumé + l'extraction de faits ---
     # Peut être un provider/modèle différent (souvent plus léger) de celui
     # utilisé pour les réponses.
     # extraction_provider suit exactement la même logique que
-    # response_provider ci-dessus : nom libre ("groq", "openai", "nvidia",
+    # token_counter_provider ci-dessus : nom libre ("groq", "openai", "nvidia",
     # ...) sauf "anthropic" qui a un traitement spécifique. Sert à
     # étiqueter/logger et à choisir la branche Anthropic vs
     # OpenAI-compatible — pas à deviner une URL (voir extraction_base_url).
@@ -60,7 +61,7 @@ class MinitokenConfig:
     # appelé (ex: "https://api.groq.com/openai/v1",
     # "https://api.openai.com/v1", "https://integrate.api.nvidia.com/v1",
     # ou toute autre API respectant le format OpenAI).
-    response_base_url: Optional[str] = None
+    token_counter_base_url: Optional[str] = None
     extraction_base_url: Optional[str] = None
 
     # --- Mémoire vectorielle ---
@@ -93,12 +94,12 @@ class MinitokenConfig:
                 "(minitoken a besoin de savoir où trouver vos conversations)."
             )
 
-        if not self.response_api_key:
-            raise ValueError("response_api_key est obligatoire.")
+        if not self.token_counter_api_key:
+            raise ValueError("token_counter_api_key est obligatoire.")
 
-        if self.response_provider != "anthropic" and not self.response_base_url:
+        if self.token_counter_provider != "anthropic" and not self.token_counter_base_url:
             raise ValueError(
-                "response_base_url est obligatoire quand response_provider "
+                "token_counter_base_url est obligatoire quand token_counter_provider "
                 "n'est pas 'anthropic' (indiquez l'URL de base de votre "
                 "fournisseur OpenAI-compatible, ex: "
                 "'https://api.groq.com/openai/v1')."
