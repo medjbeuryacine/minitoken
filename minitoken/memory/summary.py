@@ -62,7 +62,7 @@ def recompress_if_too_long(
     *,
     provider: LLMProvider,
     summary: str,
-    max_tokens: int = 500,
+    max_tokens: int = 1000,
 ) -> str:
     """
     Si le résumé dépasse `max_tokens` (mesuré avec le vrai tokenizer du
