@@ -60,30 +60,41 @@ class LocalEmbedder(Embedder):
         return vector.tolist()
 
 
-class OpenAIEmbedder(Embedder):
+class ApiEmbedder(Embedder):
     """
-    Embedder via l'API OpenAI (text-embedding-3-small par défaut).
-    Nécessite une clé API — utilisé seulement si le développeur configure
-    explicitement embedding_provider="openai".
+    Embedder via une API externe compatible OpenAI (/embeddings) — OpenAI,
+    NVIDIA, ou tout autre fournisseur. base_url est obligatoire et
+    détermine le vrai fournisseur appelé, comme pour les autres providers
+    du package (aucune liste fermée).
     """
 
-    DEFAULT_MODEL_NAME = "text-embedding-3-small"
-    DEFAULT_DIMENSION = 1536
-
-    def __init__(self, api_key: str, model_name: str | None = None):
-        self.model_name = model_name or self.DEFAULT_MODEL_NAME
+    def __init__(self, api_key: str, model_name: str, base_url: str):
+        self.model_name = model_name
+        self.base_url = base_url
 
         from openai import OpenAI
 
-        self._client = OpenAI(api_key=api_key)
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
+
+        # La dimension dépend du modèle utilisé — on la déduit du premier
+        # embedding généré plutôt que de la deviner à l'avance.
+        self._dimension: int | None = None
 
     @property
     def dimension(self) -> int:
-        return self.DEFAULT_DIMENSION
+        if self._dimension is None:
+            # Déclenche un premier appel pour déterminer la dimension
+            # réelle du modèle configuré.
+            sample = self.embed("dimension probe")
+            self._dimension = len(sample)
+        return self._dimension
 
     def embed(self, text: str) -> list[float]:
         response = self._client.embeddings.create(model=self.model_name, input=text)
-        return response.data[0].embedding
+        vector = response.data[0].embedding
+        if self._dimension is None:
+            self._dimension = len(vector)
+        return vector
 
 
 def get_embedder(config: MinitokenConfig) -> Embedder:
@@ -94,9 +105,11 @@ def get_embedder(config: MinitokenConfig) -> Embedder:
     if config.embedding_provider == "local":
         return LocalEmbedder()
 
-    if config.embedding_provider == "openai":
-        if not config.embedding_api_key:
-            raise ValueError("embedding_api_key est requis pour embedding_provider='openai'.")
-        return OpenAIEmbedder(api_key=config.embedding_api_key)
+    if config.embedding_provider == "api":
+        return ApiEmbedder(
+            api_key=config.embedding_api_key,
+            model_name=config.embedding_model,
+            base_url=config.embedding_base_url,
+        )
 
     raise ValueError(f"embedding_provider '{config.embedding_provider}' non supporté.")

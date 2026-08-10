@@ -25,11 +25,14 @@ openai-compatible = ["openai>=1.0"]      # Groq, OpenAI, NVIDIA
 anthropic = ["anthropic>=0.30"]
 local-embeddings = ["sentence-transformers>=2.7"]
 huggingface-tokenizers = ["transformers>=4.40"]  # comptage tokens précis Llama/Qwen
+prompt-compression = ["llmlingua>=0.2"]
+
 all = [
     "openai>=1.0",
     "anthropic>=0.30",
     "sentence-transformers>=2.7",
     "transformers>=4.40",
+    "llmlingua>=0.2",
 ]
 
 [project.urls]

@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 
-EmbeddingProviderName = Literal["local", "openai"]
+EmbeddingProviderName = Literal["local", "api"]
+CompressionProviderName = Literal["local", "extraction_llm", "none"]
 
 # provider_name n'est plus restreint à une liste fermée : c'est un nom
 # libre ("groq", "openai", "nvidia", "mistral", ou n'importe quel autre).
@@ -64,9 +65,33 @@ class MinitokenConfig:
     token_counter_base_url: Optional[str] = None
     extraction_base_url: Optional[str] = None
 
+    # --- Compression de texte (résumé trop long + question utilisateur) ---
+    # "local"  : LLMLingua-2, tourne en local, gratuit, extractif (pas de
+    #            reformulation, sélectionne juste les tokens essentiels).
+    # "api"    : utilise un LLM génératif via API (config compression_llm_*
+    #            ci-dessous), indépendant de extraction_provider.
+    # "none"   : désactivé (comportement par défaut, rien ne change).
+    compression_mode: Literal["local", "api", "none"] = "none"
+    compression_target_ratio: float = 0.5
+
+    # Utilisés uniquement si compression_mode="api". Config totalement
+    # indépendante de extraction_provider — un développeur peut choisir un
+    # provider différent ici, ce n'est jamais lié automatiquement.
+    compression_llm_provider: Optional[str] = None
+    compression_llm_model: Optional[str] = None
+    compression_llm_api_key: Optional[str] = None
+    compression_llm_base_url: Optional[str] = None
+    
     # --- Mémoire vectorielle ---
+    # "local" : sentence-transformers, tourne en local, gratuit, aucune
+    #           clé requise.
+    # "api"   : appel à une API d'embedding externe (OpenAI, NVIDIA, ou
+    #           tout autre fournisseur exposant /embeddings au format
+    #           OpenAI) — nécessite embedding_api_key et embedding_base_url.
     embedding_provider: EmbeddingProviderName = "local"
-    embedding_api_key: Optional[str] = None  # requis seulement si embedding_provider != "local"
+    embedding_model: Optional[str] = None  # requis seulement si embedding_provider="api"
+    embedding_api_key: Optional[str] = None
+    embedding_base_url: Optional[str] = None
 
     # --- Budget de tokens ---
     token_budget_max: int = 8000
@@ -116,11 +141,37 @@ class MinitokenConfig:
                 "'https://api.groq.com/openai/v1')."
             )
 
-        if self.embedding_provider != "local" and not self.embedding_api_key:
-            raise ValueError(
-                "embedding_api_key est obligatoire quand embedding_provider "
-                "n'est pas 'local'."
-            )
+        if self.embedding_provider == "api":
+            if not self.embedding_api_key:
+                raise ValueError(
+                    "embedding_api_key est obligatoire quand embedding_provider='api'."
+                )
+            if not self.embedding_base_url:
+                raise ValueError(
+                    "embedding_base_url est obligatoire quand embedding_provider='api' "
+                    "(indiquez l'URL de base de votre fournisseur d'embeddings, ex: "
+                    "'https://api.openai.com/v1')."
+                )
+            if not self.embedding_model:
+                raise ValueError(
+                    "embedding_model est obligatoire quand embedding_provider='api'."
+                )
+
+        if self.compression_mode == "api":
+            if not (self.compression_llm_provider and self.compression_llm_model and self.compression_llm_api_key):
+                raise ValueError(
+                    "compression_llm_provider, compression_llm_model et "
+                    "compression_llm_api_key sont obligatoires quand "
+                    "compression_mode='llm'."
+                )
+            if self.compression_llm_provider != "anthropic" and not self.compression_llm_base_url:
+                raise ValueError(
+                    "compression_llm_base_url est obligatoire quand "
+                    "compression_llm_provider n'est pas 'anthropic'."
+                )
+
+        if not (0 < self.compression_target_ratio <= 1):
+            raise ValueError("compression_target_ratio doit être entre 0 et 1 (exclu 0).")
 
         if self.token_budget_max <= 0:
             raise ValueError("token_budget_max doit être un entier positif.")
