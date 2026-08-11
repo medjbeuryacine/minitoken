@@ -4,6 +4,4 @@ __pycache__/
 .env
 .venv/
 venv/
-test_minitoken.py
-test_minitoken_strict.py
-test_compression_strict.py
+*tests/

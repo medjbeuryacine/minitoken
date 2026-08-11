@@ -8,7 +8,7 @@ lors de l'instanciation de MinitokenConfig, dans SON projet.
 
 from dataclasses import dataclass, field
 from typing import Literal, Optional
-
+from minitoken.token_budget.rate_limiter import RateLimitConfig
 
 EmbeddingProviderName = Literal["local", "api"]
 CompressionProviderName = Literal["local", "extraction_llm", "none"]
@@ -100,6 +100,18 @@ class MinitokenConfig:
     # Si non fourni, un seul scope "global" est utilisé (cas mono-agent).
     agent_scopes: list[str] = field(default_factory=lambda: ["global"])
 
+    # --- Rate limiting optionnel, par provider ---
+    # Si None (défaut), aucun throttling n'est appliqué pour ce provider.
+    token_counter_rate_limit: Optional["RateLimitConfig"] = None
+    extraction_rate_limit: Optional["RateLimitConfig"] = None
+    compression_rate_limit: Optional["RateLimitConfig"] = None
+
+    # --- Limite du nombre de faits récupérés par get_context() ---
+    # Empêche qu'un historique de faits accumulé sur des mois d'usage ne
+    # fasse exploser le budget de tokens à chaque appel. Les faits les
+    # plus récents (par updated_at) sont toujours prioritaires.
+    max_user_facts: int = 30
+
     def __post_init__(self):
         self._validate()
 
@@ -178,6 +190,9 @@ class MinitokenConfig:
 
         if not self.agent_scopes:
             raise ValueError("agent_scopes ne peut pas être une liste vide.")
+
+        if self.max_user_facts <= 0:
+            raise ValueError("max_user_facts doit être un entier positif.")
 
         if "global" not in self.agent_scopes:
             # "global" doit toujours être un scope valide, même si le

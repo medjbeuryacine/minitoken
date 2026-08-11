@@ -15,7 +15,7 @@ from minitoken.providers.base import ChatMessage, CompletionResult, LLMProvider
 
 
 class OpenAICompatibleProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str, base_url: str, provider_label: str | None = None):
+    def __init__(self, api_key: str, model: str, base_url: str, provider_label: str | None = None, rate_limiter=None):
         """
         base_url : l'URL de base de votre fournisseur OpenAI-compatible
                    (ex: "https://api.groq.com/openai/v1",
@@ -25,7 +25,7 @@ class OpenAICompatibleProvider(LLMProvider):
         provider_label : nom libre, uniquement informatif (logs, messages
                    d'erreur) — n'affecte pas le comportement.
         """
-        super().__init__(api_key=api_key, model=model)
+        super().__init__(api_key=api_key, model=model, rate_limiter=rate_limiter)
 
         if not base_url:
             raise ValueError(
@@ -61,6 +61,13 @@ class OpenAICompatibleProvider(LLMProvider):
             return None
 
     def generate(self, messages: list[ChatMessage], max_tokens: int = 1000) -> CompletionResult:
+        if self._rate_limiter:
+            estimated = self._estimate_tokens_for_messages(messages) + max_tokens
+            check = self._rate_limiter.check_limit(estimated_tokens=estimated)
+            if not check.allowed:
+                from minitoken.token_budget.rate_limiter import RateLimitExceededError
+                raise RateLimitExceededError(retry_after_seconds=check.retry_after_seconds)
+
         response = self._client.chat.completions.create(
             model=self.model,
             max_tokens=max_tokens,
@@ -69,6 +76,10 @@ class OpenAICompatibleProvider(LLMProvider):
 
         choice = response.choices[0]
         usage = response.usage
+        total_tokens = usage.total_tokens if usage else self._estimate_tokens_for_messages(messages) + max_tokens
+
+        if self._rate_limiter:
+            self._rate_limiter.record_call(tokens_used=total_tokens)
 
         return CompletionResult(
             content=choice.message.content or "",

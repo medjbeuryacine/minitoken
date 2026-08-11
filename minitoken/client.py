@@ -21,6 +21,7 @@ from minitoken.memory import short_term, structured, summary
 from minitoken.memory.vector import Embedder, get_embedder
 from minitoken.memory.prompt_compression import Compressor, get_compressor
 from minitoken.providers import ChatMessage, LLMProvider, build_provider
+from minitoken.token_budget.rate_limiter import RateLimiter
 from minitoken.token_budget.counter import ContextBundle, TokenReport, count_bundle_tokens
 from minitoken.token_budget.trimmer import trim_to_budget
 
@@ -46,11 +47,21 @@ class MinitokenClient:
 
         self.repository = repository or MinitokenRepository(config)
 
+        token_counter_limiter = (
+            RateLimiter(repository=self.repository, provider_role="token_counter", config=config.token_counter_rate_limit)
+            if config.token_counter_rate_limit else None
+        )
+        extraction_limiter = (
+            RateLimiter(repository=self.repository, provider_role="extraction", config=config.extraction_rate_limit)
+            if config.extraction_rate_limit else None
+        )
+
         self.token_counter_provider = token_counter_provider or build_provider(
             provider_name=config.token_counter_provider,
             model=config.token_counter_model,
             api_key=config.token_counter_api_key,
             base_url=config.token_counter_base_url,
+            rate_limiter=token_counter_limiter,
         )
 
         self.extraction_provider = extraction_provider or build_provider(
@@ -58,6 +69,7 @@ class MinitokenClient:
             model=config.extraction_model,
             api_key=config.extraction_api_key,
             base_url=config.extraction_base_url,
+            rate_limiter=extraction_limiter,
         )
 
         self.embedder = embedder or get_embedder(config)
@@ -72,6 +84,25 @@ class MinitokenClient:
 
         apply_migrations(repository=self.repository, embedder=self.embedder)
 
+    def check_response_rate_limit(self, *, estimated_tokens: int):
+        """
+        Vérifie si un appel au LLM de réponse (celui configuré via
+        token_counter_provider) est autorisé maintenant, sans jamais
+        attendre. À appeler par l'application hôte AVANT de générer sa
+        réponse (ex: avant d'invoquer votre graph LangGraph), si vous
+        voulez respecter les limites configurées pour ce provider.
+
+        Retourne un RateLimitCheckResult(allowed, retry_after_seconds).
+        Si aucun rate limit n'est configuré pour token_counter_provider,
+        retourne toujours allowed=True.
+        """
+        from minitoken.token_budget.rate_limiter import RateLimitCheckResult
+
+        limiter = getattr(self.token_counter_provider, "_rate_limiter", None)
+        if limiter is None:
+            return RateLimitCheckResult(allowed=True)
+        return limiter.check_limit(estimated_tokens=estimated_tokens)
+
     def compress_user_message(self, message: str) -> str:
         """Compresse une question utilisateur avant envoi au LLM principal,
         selon compression_mode configuré. Retourne le texte inchangé si
@@ -79,6 +110,7 @@ class MinitokenClient:
         jamais automatique dans get_context()."""
         return self.compressor.compress(message, self.config.compression_target_ratio)
 
+    
     # ------------------------------------------------------------------
     # Avant la réponse principale : construire le contexte optimisé
     # ------------------------------------------------------------------
@@ -93,6 +125,7 @@ class MinitokenClient:
         keep_recent_count: int = 8,
         vector_top_k: int = 3,
         budget_override: int | None = None,
+        max_user_facts: int | None = None,
     ) -> tuple[ContextBundle, TokenReport]:
         """
         budget_override : si fourni, utilise ce budget au lieu de
@@ -109,7 +142,10 @@ class MinitokenClient:
         conversation_memory = self.repository.get_conversation_memory(conversation_id)
         existing_summary = conversation_memory.summary if conversation_memory else ""
 
-        user_facts = self.repository.get_user_facts(user_id=user_id, scopes=relevant_scopes)
+        effective_max_facts = max_user_facts if max_user_facts is not None else self.config.max_user_facts
+        user_facts = self.repository.get_user_facts(
+            user_id=user_id, scopes=relevant_scopes, limit=effective_max_facts
+        )
 
         vector_memories: list[str] = []
         if window.recent_messages:

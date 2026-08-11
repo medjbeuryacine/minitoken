@@ -4,7 +4,7 @@ from minitoken.providers.base import ChatMessage, CompletionResult, LLMProvider
 
 
 def build_provider(
-    *, provider_name: str, model: str, api_key: str, base_url: str | None = None
+    *, provider_name: str, model: str, api_key: str, base_url: str | None = None, rate_limiter=None
 ) -> LLMProvider:
     """
     Fabrique un provider concret.
@@ -20,7 +20,7 @@ def build_provider(
     if provider_name == "anthropic":
         from minitoken.providers.anthropic_provider import AnthropicProvider
 
-        return AnthropicProvider(api_key=api_key, model=model)
+        return AnthropicProvider(api_key=api_key, model=model, rate_limiter=rate_limiter)
 
     from minitoken.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -33,7 +33,7 @@ def build_provider(
         )
 
     return OpenAICompatibleProvider(
-        api_key=api_key, model=model, base_url=base_url, provider_label=provider_name
+        api_key=api_key, model=model, base_url=base_url, provider_label=provider_name, rate_limiter=rate_limiter
     )
 
 

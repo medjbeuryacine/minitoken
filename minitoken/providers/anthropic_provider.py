@@ -11,8 +11,8 @@ from minitoken.providers.base import ChatMessage, CompletionResult, LLMProvider
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str):
-        super().__init__(api_key=api_key, model=model)
+    def __init__(self, api_key: str, model: str, rate_limiter=None):
+        super().__init__(api_key=api_key, model=model, rate_limiter=rate_limiter)
 
         # Import différé : évite de forcer la dépendance `anthropic` si le
         # développeur n'utilise que des providers OpenAI-compatible.
@@ -21,10 +21,11 @@ class AnthropicProvider(LLMProvider):
         self._client = Anthropic(api_key=api_key)
 
     def generate(self, messages: list[ChatMessage], max_tokens: int = 1000) -> CompletionResult:
-        # L'API Anthropic sépare le system prompt des autres messages,
-        # contrairement au format OpenAI qui le met dans la liste messages
-        # avec role="system".
         system_prompt, conversation_messages = self._split_system_prompt(messages)
+
+        if self._rate_limiter:
+            estimated = sum(self.count_tokens(m.content) for m in messages) + max_tokens
+            self._rate_limiter.wait_if_needed(estimated_tokens=estimated)
 
         response = self._client.messages.create(
             model=self.model,
@@ -34,6 +35,9 @@ class AnthropicProvider(LLMProvider):
         )
 
         content = "".join(block.text for block in response.content if block.type == "text")
+
+        if self._rate_limiter:
+            self._rate_limiter.record_call(tokens_used=response.usage.input_tokens + response.usage.output_tokens)
 
         return CompletionResult(
             content=content,

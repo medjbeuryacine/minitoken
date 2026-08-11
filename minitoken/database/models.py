@@ -38,7 +38,7 @@ class MinitokenModels:
     ConversationMemory: type
     UserMemory: type
     MemoryEmbedding: type
-
+    RateLimitEvent: type
 
 def build_models(config: MinitokenConfig) -> MinitokenModels:
     """
@@ -134,9 +134,18 @@ def build_models(config: MinitokenConfig) -> MinitokenModels:
 
         created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    class RateLimitEvent(Base):
+        __tablename__ = "rate_limit_events"
+
+        id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+        provider_role = Column(String(100), nullable=False, index=True)
+        called_at = Column(DateTime(timezone=True), server_default=func.timezone("UTC", func.now()), index=True)
+        tokens_used = Column(Integer, nullable=False, default=0)
+
     return MinitokenModels(
         Base=Base,
         ConversationMemory=ConversationMemory,
         UserMemory=UserMemory,
         MemoryEmbedding=MemoryEmbedding,
+        RateLimitEvent=RateLimitEvent,   # ← ajouté
     )

@@ -30,9 +30,10 @@ class LLMProvider(ABC):
     anthropic_provider.py, ...) doit implémenter.
     """
 
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, rate_limiter=None):
         self.api_key = api_key
         self.model = model
+        self._rate_limiter = rate_limiter
 
     @abstractmethod
     def generate(self, messages: list[ChatMessage], max_tokens: int = 1000) -> CompletionResult:

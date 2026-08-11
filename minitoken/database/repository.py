@@ -149,12 +149,13 @@ class MinitokenRepository:
             session.refresh(record)
             return record
 
-    def get_user_facts(self, *, user_id: uuid.UUID, scopes: list[str]):
+    def get_user_facts(self, *, user_id: uuid.UUID, scopes: list[str], limit: int):
         """
-        Récupère les faits d'un utilisateur, filtrés par une liste de
-        scopes (typiquement ["global", "<nom_agent>"]). C'est ce
-        mécanisme qui garantit qu'un agent ne voit jamais les faits
-        spécifiques à un autre agent.
+        Récupère les faits les plus récents d'un utilisateur, filtrés par
+        une liste de scopes (typiquement ["global", "<nom_agent>"]).
+        Limité à `limit` faits (les plus récents en priorité, via
+        updated_at), pour éviter qu'un historique accumulé sur des mois
+        d'usage ne fasse exploser le budget de tokens à chaque appel.
         """
         with self._session() as session:
             return (
@@ -164,6 +165,7 @@ class MinitokenRepository:
                     self.models.UserMemory.scope.in_(scopes),
                 )
                 .order_by(self.models.UserMemory.updated_at.desc())
+                .limit(limit)
                 .all()
             )
 
