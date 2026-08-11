@@ -103,6 +103,55 @@ class MinitokenClient:
             return RateLimitCheckResult(allowed=True)
         return limiter.check_limit(estimated_tokens=estimated_tokens)
 
+    def get_rate_limit_status(self, *, provider_role: str = "token_counter") -> dict:
+        """
+        Retourne l'état de rate limit pour affichage (barres de
+        progression, %). Combine :
+        - les VRAIS headers du fournisseur (si disponibles, ex: Groq) —
+          la source la plus fiable
+        - notre propre calcul Postgres (toujours disponible, fallback
+          universel pour tout fournisseur, y compris ceux sans headers)
+        """
+        provider = self.token_counter_provider if provider_role == "token_counter" else self.extraction_provider
+        limiter = getattr(provider, "_rate_limiter", None)
+        real_headers = getattr(provider, "last_rate_limit_headers", None)
+
+        status = {"provider_role": provider_role, "source": "estimated"}
+
+        if real_headers and real_headers.limit_tokens is not None:
+            status.update({
+                "source": "provider_headers",
+                "tokens_limit": real_headers.limit_tokens,
+                "tokens_remaining": real_headers.remaining_tokens,
+                "tokens_used": real_headers.limit_tokens - (real_headers.remaining_tokens or 0),
+                "tokens_percentage": round(
+                    100 * (real_headers.limit_tokens - (real_headers.remaining_tokens or 0)) / real_headers.limit_tokens, 1
+                ) if real_headers.limit_tokens else None,
+                "requests_limit": real_headers.limit_requests,
+                "requests_remaining": real_headers.remaining_requests,
+            })
+        elif limiter and limiter.config.tokens_per_day:
+            # fallback : calcul Postgres sur la fenêtre configurée
+            from datetime import datetime, timedelta, timezone
+            from sqlalchemy import func
+
+            window_start = datetime.now(timezone.utc) - timedelta(days=1)
+            with limiter.repository._session() as session:
+                table = limiter.repository.models.RateLimitEvent
+                used = (
+                    session.query(func.coalesce(func.sum(table.tokens_used), 0))
+                    .filter(table.provider_role == limiter.provider_role, table.called_at >= window_start)
+                    .scalar()
+                )
+            status.update({
+                "tokens_limit": limiter.config.tokens_per_day,
+                "tokens_used": used,
+                "tokens_remaining": max(0, limiter.config.tokens_per_day - used),
+                "tokens_percentage": round(100 * used / limiter.config.tokens_per_day, 1),
+            })
+
+        return status
+
     def compress_user_message(self, message: str) -> str:
         """Compresse une question utilisateur avant envoi au LLM principal,
         selon compression_mode configuré. Retourne le texte inchangé si

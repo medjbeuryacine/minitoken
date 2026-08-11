@@ -45,7 +45,8 @@ class OpenAICompatibleProvider(LLMProvider):
         # Tokenizer réel si disponible pour ce modèle (voir _resolve_tokenizer).
         # Sinon, count_tokens() retombe sur une approximation documentée.
         self._tokenizer = self._resolve_tokenizer(model)
-
+        self.last_rate_limit_headers = None
+        
     def _resolve_tokenizer(self, model: str):
         """
         Tente de charger un tokenizer précis pour ce modèle via la lib
@@ -68,11 +69,18 @@ class OpenAICompatibleProvider(LLMProvider):
                 from minitoken.token_budget.rate_limiter import RateLimitExceededError
                 raise RateLimitExceededError(retry_after_seconds=check.retry_after_seconds)
 
-        response = self._client.chat.completions.create(
+        # with_raw_response donne accès aux headers HTTP en plus du JSON
+        # parsé, pour capturer les vrais compteurs du fournisseur (Groq
+        # les expose, d'autres non — on gère les deux cas).
+        raw_response = self._client.chat.completions.with_raw_response.create(
             model=self.model,
             max_tokens=max_tokens,
             messages=[{"role": m.role, "content": m.content} for m in messages],
         )
+        response = raw_response.parse()
+        headers = raw_response.headers
+
+        rate_limit_headers = self._extract_rate_limit_headers(headers)
 
         choice = response.choices[0]
         usage = response.usage
@@ -81,10 +89,49 @@ class OpenAICompatibleProvider(LLMProvider):
         if self._rate_limiter:
             self._rate_limiter.record_call(tokens_used=total_tokens)
 
+        self.last_rate_limit_headers = rate_limit_headers
+
         return CompletionResult(
             content=choice.message.content or "",
             input_tokens=usage.prompt_tokens if usage else self._estimate_tokens_for_messages(messages),
             output_tokens=usage.completion_tokens if usage else self.count_tokens(choice.message.content or ""),
+            provider_rate_limit_headers=rate_limit_headers,
+        )
+
+    def _extract_rate_limit_headers(self, headers) -> "ProviderRateLimitHeaders":
+        """
+        Lit les headers x-ratelimit-* standards (format Groq/OpenAI).
+        Retourne un objet avec des champs None si un header est absent
+        (fournisseur qui ne les expose pas).
+        """
+        from minitoken.providers.base import ProviderRateLimitHeaders
+
+        def _get_int(name):
+            val = headers.get(name)
+            return int(val) if val is not None else None
+
+        def _get_seconds(name):
+            # Groq renvoie parfois "1.2s" ou "120ms" — on normalise en secondes.
+            val = headers.get(name)
+            if val is None:
+                return None
+            val = val.strip().lower()
+            try:
+                if val.endswith("ms"):
+                    return float(val[:-2]) / 1000
+                if val.endswith("s"):
+                    return float(val[:-1])
+                return float(val)
+            except ValueError:
+                return None
+
+        return ProviderRateLimitHeaders(
+            limit_requests=_get_int("x-ratelimit-limit-requests"),
+            remaining_requests=_get_int("x-ratelimit-remaining-requests"),
+            limit_tokens=_get_int("x-ratelimit-limit-tokens"),
+            remaining_tokens=_get_int("x-ratelimit-remaining-tokens"),
+            reset_requests_seconds=_get_seconds("x-ratelimit-reset-requests"),
+            reset_tokens_seconds=_get_seconds("x-ratelimit-reset-tokens"),
         )
 
     def count_tokens(self, text: str) -> int:

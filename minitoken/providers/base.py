@@ -18,10 +18,24 @@ class ChatMessage:
 
 
 @dataclass
+class ProviderRateLimitHeaders:
+    """Infos de rate limit renvoyées directement par le fournisseur
+    (headers HTTP), quand disponibles. None si le fournisseur ne les
+    expose pas (ex: certains endpoints NVIDIA)."""
+    limit_requests: int | None = None
+    remaining_requests: int | None = None
+    limit_tokens: int | None = None
+    remaining_tokens: int | None = None
+    reset_requests_seconds: float | None = None
+    reset_tokens_seconds: float | None = None
+
+
+@dataclass
 class CompletionResult:
     content: str
     input_tokens: int
     output_tokens: int
+    provider_rate_limit_headers: ProviderRateLimitHeaders | None = None
 
 
 class LLMProvider(ABC):
