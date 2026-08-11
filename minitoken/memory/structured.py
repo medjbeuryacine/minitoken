@@ -16,28 +16,41 @@ from dataclasses import dataclass
 from minitoken.providers.base import ChatMessage, LLMProvider
 
 _EXTRACTION_SYSTEM_PROMPT = """Tu analyses un échange entre un utilisateur \
-et un assistant IA. Extrais uniquement les faits DURABLES à retenir sur \
-l'utilisateur (préférences, contexte de vie/travail, décisions, objectifs \
-stables) — ignore les détails ponctuels de la discussion en cours.
+et un assistant IA. Ton rôle est d'être TRÈS SÉLECTIF — la plupart des \
+échanges ne contiennent AUCUN fait à extraire, et c'est normal.
 
-Pour chaque fait, indique un scope :
+RÈGLE PRINCIPALE : n'extrais un fait QUE si l'utilisateur donne une \
+information PERSONNELLE, EXPLICITE et STABLE sur lui-même (pas sur le \
+sujet en général). Une question posée par l'utilisateur n'est PAS un \
+fait sur lui, même si elle mentionne un mot-clé personnel.
+
+Pour chaque fait retenu, indique un scope :
 - "global" si le fait concerne l'utilisateur en général, INDÉPENDAMMENT du \
-sujet de la conversation (ex: préférences de communication, langue \
-parlée, contexte professionnel, personnalité).
-- "agent_specific" si le fait est un DÉTAIL ou une DONNÉE propre au sujet \
-traité dans CETTE conversation précise, qui n'aurait aucun sens hors de \
-ce contexte (ex: objectifs sportifs, données de santé, informations \
-métier propres à un domaine particulier).
+sujet de la conversation (préférences de communication, contexte de \
+vie/travail stable).
+- "agent_specific" si le fait est une DONNÉE personnelle propre au sujet \
+traité (objectifs, contraintes, historique propres à ce domaine).
 
-Exemples :
+Exemples de faits À EXTRAIRE (information personnelle explicite donnée par
+l'utilisateur) :
 - "Je préfère des réponses courtes" -> global
-- "Je travaille en solo comme développeur" -> global
-- "Mon objectif est la prise de masse" -> agent_specific
-- "Je m'entraîne 4 fois par semaine" -> agent_specific
-- "J'ai mal au genou droit" -> agent_specific
+- "Mon objectif est 100kg au développé couché d'ici 1 an" -> agent_specific
+- "Je m'entraîne lundi, mercredi et vendredi" -> agent_specific
+- "J'ai mal au genou droit depuis 2 semaines" -> agent_specific
 
-S'il n'y a AUCUN fait durable à extraire (échange de politesse, question \
-ponctuelle sans info nouvelle), réponds avec une liste vide.
+Exemples de faits à NE PAS EXTRAIRE (aucune information personnelle réelle,
+juste une question ou une remarque générale) :
+- "Quel est le meilleur cardio pour un débutant ?" -> RIEN (question générale, pas d'info sur cet utilisateur précis)
+- "Comment optimiser ma récupération ?" -> RIEN (question générale)
+- "Quels suppléments prennent les athlètes professionnels ?" -> RIEN (parle des autres, pas de l'utilisateur)
+- "Comment faire des étirements après une séance ?" -> RIEN (question générale de méthode)
+- La réponse de l'assistant seule ne donne JAMAIS lieu à un fait — seul ce
+  que L'UTILISATEUR affirme sur lui-même compte.
+
+En cas de doute, NE RIEN EXTRAIRE. Il vaut mieux rater un fait mineur que
+polluer la mémoire avec du bruit. La très grande majorité des échanges
+(questions générales, demandes de conseils, échanges de politesse) ne
+contiennent RIEN à extraire — réponds alors avec une liste vide.
 
 Réponds UNIQUEMENT avec un JSON valide, sans texte autour, au format :
 [{"fact": "...", "scope": "global" | "agent_specific", "category": "..."}]
