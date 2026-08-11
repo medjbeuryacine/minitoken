@@ -92,12 +92,13 @@ class MinitokenClient:
         all_messages: list[ChatMessage],
         keep_recent_count: int = 8,
         vector_top_k: int = 3,
+        budget_override: int | None = None,
     ) -> tuple[ContextBundle, TokenReport]:
         """
-        Assemble le contexte optimisé (recent + summary + structured +
-        vector), le réduit si besoin pour respecter token_budget_max, et
-        retourne le bundle final prêt à envoyer au LLM ainsi que le
-        rapport de tokens correspondant.
+        budget_override : si fourni, utilise ce budget au lieu de
+        config.token_budget_max. Utile quand l'appelant a un system
+        prompt fixe (non géré par minitoken) qu'il faut soustraire du
+        budget total avant d'appeler get_context().
         """
         relevant_scopes = self._resolve_scopes(agent_scope)
 
@@ -129,10 +130,12 @@ class MinitokenClient:
             vector_memories=vector_memories,
         )
 
+        effective_budget = budget_override if budget_override is not None else self.config.token_budget_max
+
         return trim_to_budget(
             provider=self.token_counter_provider,
             bundle=bundle,
-            budget_max=self.config.token_budget_max,
+            budget_max=effective_budget,
         )
 
     # ------------------------------------------------------------------
