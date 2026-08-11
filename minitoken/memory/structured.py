@@ -8,6 +8,12 @@ léger extrait les faits à retenir dans user_memory, et classe chacun comme
 concerné par CETTE conversation). Le code résout ensuite "agent_specific"
 en le scope réel (ex: "coach_ia"), à partir du contexte connu de l'appelant
 — le LLM n'a pas besoin de connaître le nom exact de l'agent pour classer.
+
+Le prompt seul n'est PAS fiable à 100% sur un petit modèle (8B) : plus on
+ajoute de règles au prompt, plus le modèle se perd et invente de nouveaux
+types d'erreurs. La stratégie retenue : un prompt SIMPLE et stable, plus
+un filtre déterministe en Python en complément (_is_likely_meta_fact),
+qui ne dépend jamais de la fiabilité du modèle.
 """
 
 import json
@@ -16,16 +22,21 @@ from dataclasses import dataclass
 from minitoken.providers.base import ChatMessage, LLMProvider
 
 _EXTRACTION_SYSTEM_PROMPT = """Tu analyses un échange entre un utilisateur \
-et un assistant IA. Extrais les faits DURABLES et PERSONNELS que \
-l'utilisateur révèle sur lui-même (prénom, préférences, objectifs, \
+et un assistant IA. Extrais uniquement les faits DURABLES et PERSONNELS \
+que l'utilisateur affirme sur lui-même (prénom, préférences, objectifs, \
 contraintes, contexte de vie stable).
 
-N'extrais PAS un fait si le message est juste une question générale sans \
-information personnelle (ex: "quel est le meilleur cardio ?" ne révèle \
-rien sur cet utilisateur précis).
+N'extrais PAS un fait si le message est une question, une demande de \
+conseil, ou une situation hypothétique — même si elle mentionne un \
+chiffre, un tiers, ou un sujet personnel. Exemple : "Combien de fois par \
+semaine dois-je m'entraîner ?" ne révèle rien sur l'utilisateur, c'est \
+une question, pas une affirmation.
+
+Si l'utilisateur exprime un refus ou une négation ("je ne veux pas...", \
+"jamais de..."), garde ce sens négatif clairement dans le fait extrait.
 
 Pour chaque fait, indique un scope :
-- "global" : vrai pour l'utilisateur en général, peu importe le sujet (prénom, préférences de communication, contexte de vie/travail).
+- "global" : vrai pour l'utilisateur en général (prénom, préférences de communication, contexte de vie/travail stable).
 - "agent_specific" : donnée propre au sujet traité dans cette conversation (objectifs, contraintes, historique liés à ce domaine).
 
 Exemples :
@@ -33,8 +44,10 @@ Exemples :
 - "Je préfère des réponses courtes" -> {"fact": "Préfère réponses courtes", "scope": "global"}
 - "Mon objectif est 100kg au développé couché" -> {"fact": "Objectif 100kg développé couché", "scope": "agent_specific"}
 - "Je m'entraîne lundi, mercredi, vendredi" -> {"fact": "S'entraîne lundi/mercredi/vendredi", "scope": "agent_specific"}
+- "Je ne veux pas faire de squat, opération au genou" -> [{"fact": "Refuse de faire du squat", "scope": "agent_specific"}, {"fact": "A eu une opération au genou", "scope": "agent_specific"}]
 - "Quel est le meilleur cardio pour débutant ?" -> aucun fait (question générale)
-- "Comment optimiser ma récupération ?" -> aucun fait (question générale)
+- "Combien d'entraînements par semaine ?" -> aucun fait (question, pas affirmation)
+- "Un ami s'entraîne 6 fois par semaine, c'est trop ?" -> aucun fait (parle d'un tiers)
 
 Si aucun fait personnel n'est donné, réponds avec une liste vide.
 
@@ -67,6 +80,11 @@ def extract_facts(
     n'a pas pu être parsée (on ignore silencieusement plutôt que de
     planter le flux principal — l'extraction est un mécanisme en tâche de
     fond, pas critique pour la réponse déjà envoyée à l'utilisateur).
+
+    Un filtre déterministe (_is_likely_meta_fact) élimine en plus les
+    faits qui décrivent le sujet d'une question plutôt qu'une vraie info
+    sur l'utilisateur — un garde-fou technique qui ne dépend pas de la
+    fiabilité du modèle.
     """
     user_content = (
         f"Message utilisateur :\n{user_message}\n\n"
@@ -92,6 +110,12 @@ def extract_facts(
             raw_scope = item["scope"]
         except (KeyError, TypeError):
             continue  # entrée mal formée, on l'ignore plutôt que de planter
+
+        if not fact_text or not isinstance(fact_text, str) or not fact_text.strip():
+            continue  # fact vide/None/pas une string, on l'ignore
+
+        if _is_likely_meta_fact(fact_text):
+            continue  # filtre déterministe : ce n'est pas un vrai fait personnel
 
         resolved_scope = "global" if raw_scope == "global" else current_agent_scope
 
@@ -130,3 +154,21 @@ def _parse_llm_json(raw_content: str) -> list[dict] | None:
         return None
 
     return parsed
+
+
+def _is_likely_meta_fact(fact_text: str) -> bool:
+    """
+    Détecte les faits qui parlent de la question elle-même plutôt que
+    d'une vraie info sur l'utilisateur — filet de sécurité déterministe,
+    en complément du prompt (qui seul n'est pas fiable à 100% sur un
+    petit modèle). Ce filtre ne dépend jamais du comportement du LLM,
+    contrairement aux instructions du prompt qu'il peut ignorer.
+    """
+    meta_patterns = [
+        "question sur", "pose une question", "s'intéresse à",
+        "demande des infos", "se renseigne", "n'a pas donné",
+        "aucune information", "pas d'information", "demande si",
+        "veut savoir",
+    ]
+    fact_lower = fact_text.lower()
+    return any(pattern in fact_lower for pattern in meta_patterns)
