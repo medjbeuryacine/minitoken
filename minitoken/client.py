@@ -107,11 +107,14 @@ class MinitokenClient:
         """
         Retourne l'état de rate limit pour affichage (barres de
         progression, %). Combine :
-        - les VRAIS headers du fournisseur (si disponibles, ex: Groq) —
-          la source la plus fiable
-        - notre propre calcul Postgres (toujours disponible, fallback
-          universel pour tout fournisseur, y compris ceux sans headers)
+        - les VRAIS headers du fournisseur (si disponibles, ex: Groq)
+        - notre propre calcul Postgres (fallback universel), couvrant
+          RPM/RPD/TPM/TPD, peu importe lesquels sont configurés — chacun
+          avec limite, utilisé, restant, ET pourcentage.
         """
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import func
+
         provider = self.token_counter_provider if provider_role == "token_counter" else self.extraction_provider
         limiter = getattr(provider, "_rate_limiter", None)
         real_headers = getattr(provider, "last_rate_limit_headers", None)
@@ -119,36 +122,67 @@ class MinitokenClient:
         status = {"provider_role": provider_role, "source": "estimated"}
 
         if real_headers and real_headers.limit_tokens is not None:
+            tokens_used = real_headers.limit_tokens - (real_headers.remaining_tokens or 0)
             status.update({
                 "source": "provider_headers",
                 "tokens_limit": real_headers.limit_tokens,
                 "tokens_remaining": real_headers.remaining_tokens,
-                "tokens_used": real_headers.limit_tokens - (real_headers.remaining_tokens or 0),
-                "tokens_percentage": round(
-                    100 * (real_headers.limit_tokens - (real_headers.remaining_tokens or 0)) / real_headers.limit_tokens, 1
-                ) if real_headers.limit_tokens else None,
-                "requests_limit": real_headers.limit_requests,
-                "requests_remaining": real_headers.remaining_requests,
+                "tokens_used": tokens_used,
+                "tokens_percentage": round(100 * tokens_used / real_headers.limit_tokens, 1)
+                    if real_headers.limit_tokens else None,
             })
-        elif limiter and limiter.config.tokens_per_day:
-            # fallback : calcul Postgres sur la fenêtre configurée
-            from datetime import datetime, timedelta, timezone
-            from sqlalchemy import func
+            if real_headers.limit_requests is not None:
+                requests_used = real_headers.limit_requests - (real_headers.remaining_requests or 0)
+                status.update({
+                    "requests_limit": real_headers.limit_requests,
+                    "requests_remaining": real_headers.remaining_requests,
+                    "requests_used": requests_used,
+                    "requests_percentage": round(100 * requests_used / real_headers.limit_requests, 1)
+                        if real_headers.limit_requests else None,
+                })
+            return status
 
-            window_start = datetime.now(timezone.utc) - timedelta(days=1)
+        if not limiter:
+            return status
+
+        def _window_usage(window: timedelta, mode: str):
+            window_start = datetime.now(timezone.utc) - window
             with limiter.repository._session() as session:
                 table = limiter.repository.models.RateLimitEvent
-                used = (
+                if mode == "count":
+                    return (
+                        session.query(table)
+                        .filter(table.provider_role == limiter.provider_role, table.called_at >= window_start)
+                        .count()
+                    )
+                return (
                     session.query(func.coalesce(func.sum(table.tokens_used), 0))
                     .filter(table.provider_role == limiter.provider_role, table.called_at >= window_start)
                     .scalar()
                 )
+
+        def _add_metric(prefix: str, limit: int, window: timedelta, mode: str):
+            used = _window_usage(window, mode)
             status.update({
-                "tokens_limit": limiter.config.tokens_per_day,
-                "tokens_used": used,
-                "tokens_remaining": max(0, limiter.config.tokens_per_day - used),
-                "tokens_percentage": round(100 * used / limiter.config.tokens_per_day, 1),
+                f"{prefix}_limit": limit,
+                f"{prefix}_used": used,
+                f"{prefix}_remaining": max(0, limit - used),
+                f"{prefix}_percentage": round(100 * used / limit, 1) if limit else None,
             })
+
+        cfg = limiter.config
+
+        if cfg.requests_per_minute:
+            _add_metric("requests_per_minute", cfg.requests_per_minute, timedelta(minutes=1), "count")
+
+        if cfg.requests_per_day:
+            _add_metric("requests_per_day", cfg.requests_per_day, timedelta(days=1), "count")
+
+        if cfg.tokens_per_minute:
+            _add_metric("tokens_per_minute", cfg.tokens_per_minute, timedelta(minutes=1), "sum")
+
+        if cfg.tokens_per_day:
+            _add_metric("tokens_per_day", cfg.tokens_per_day, timedelta(days=1), "sum")
 
         return status
 
