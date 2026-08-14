@@ -97,11 +97,24 @@ class MinitokenClient:
         retourne toujours allowed=True.
         """
         from minitoken.token_budget.rate_limiter import RateLimitCheckResult
-
         limiter = getattr(self.token_counter_provider, "_rate_limiter", None)
         if limiter is None:
             return RateLimitCheckResult(allowed=True)
         return limiter.check_limit(estimated_tokens=estimated_tokens)
+
+    def check_and_reserve_response_rate_limit(self, *, estimated_tokens: int):
+        """
+        Version atomique de check_response_rate_limit() : vérifie ET
+        réserve immédiatement le quota estimé, pour éviter la race
+        condition d'un check suivi d'un appel LLM potentiellement long
+        avant l'enregistrement réel. Voir RateLimiter.check_and_reserve()
+        pour le détail. Retourne (RateLimitCheckResult, reservation_id).
+        """
+        from minitoken.token_budget.rate_limiter import RateLimitCheckResult
+        limiter = getattr(self.token_counter_provider, "_rate_limiter", None)
+        if limiter is None:
+            return RateLimitCheckResult(allowed=True), None
+        return limiter.check_and_reserve(estimated_tokens=estimated_tokens)
 
     def get_rate_limit_status(self, *, provider_role: str = "token_counter") -> dict:
         """
