@@ -21,35 +21,45 @@ def _ensure_cascade_on_conversation_memory_fk(engine, repository: MinitokenRepos
     table_name = repository.models.ConversationMemory.__tablename__
     constraint_name = f"{table_name}_conversation_id_fkey"
 
-    with engine.begin() as connection:
-        row = connection.execute(
-            text(
-                "SELECT confdeltype FROM pg_constraint WHERE conname = :name"
-            ),
-            {"name": constraint_name},
-        ).fetchone()
+    print(f"[MIGRATION DEBUG] table_name={table_name}, constraint_name={constraint_name}")
 
-        if row is None:
-            # Contrainte introuvable sous ce nom exact — rien à corriger
-            # automatiquement, à vérifier manuellement si ça arrive.
-            return
+    try:
+        with engine.begin() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT confdeltype FROM pg_constraint WHERE conname = :name"
+                ),
+                {"name": constraint_name},
+            ).fetchone()
 
-        if row[0] == "c":
-            # Déjà en CASCADE, rien à faire.
-            return
+            print(f"[MIGRATION DEBUG] row trouvé : {row}")
 
-        connection.execute(
-            text(f"ALTER TABLE {table_name} DROP CONSTRAINT {constraint_name}")
-        )
-        connection.execute(
-            text(
-                f"ALTER TABLE {table_name} "
-                f"ADD CONSTRAINT {constraint_name} "
-                f"FOREIGN KEY (conversation_id) "
-                f"REFERENCES {repository.config.conversations_table}({repository.config.conversations_id_column}) "
-                f"ON DELETE CASCADE"
+            if row is None:
+                print("[MIGRATION DEBUG] Contrainte introuvable sous ce nom, on arrête.")
+                return
+
+            if row[0] == "c":
+                print("[MIGRATION DEBUG] Déjà en CASCADE, rien à faire.")
+                return
+
+            print(f"[MIGRATION DEBUG] confdeltype actuel = {row[0]!r}, correction en cours...")
+
+            connection.execute(
+                text(f"ALTER TABLE {table_name} DROP CONSTRAINT {constraint_name}")
             )
-        )
+            connection.execute(
+                text(
+                    f"ALTER TABLE {table_name} "
+                    f"ADD CONSTRAINT {constraint_name} "
+                    f"FOREIGN KEY (conversation_id) "
+                    f"REFERENCES {repository.config.conversations_table}({repository.config.conversations_id_column}) "
+                    f"ON DELETE CASCADE"
+                )
+            )
+            print("[MIGRATION DEBUG] Contrainte recréée avec CASCADE.")
+    except Exception as e:
+        print(f"[MIGRATION DEBUG] EXCEPTION levée : {type(e).__name__}: {e}")
+        raise
 
 
 def apply_migrations(*, repository: MinitokenRepository, embedder: Embedder) -> None:
