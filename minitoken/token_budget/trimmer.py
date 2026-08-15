@@ -68,10 +68,24 @@ def trim_to_budget(
     #    synchrone/sans appel LLM ; la vraie recompression via LLM se fait
     #    en amont par memory/summary.py:recompress_if_too_long avant
     #    d'arriver ici).
+    #
+    #    Garde-fou anti-boucle-infinie : _truncate_by_tokens converge vers
+    #    un minimum de 1 caractère (max(1, ...)) et ne réduit plus jamais
+    #    en dessous. Si ce caractère unique compte encore comme un ou
+    #    plusieurs tokens dépassant un budget_max très petit, la boucle ne
+    #    progresserait jamais sans cette protection — on sort dès que la
+    #    troncature n'a plus réduit la longueur du texte.
     while working_bundle.summary and report.total_tokens > budget_max:
+        previous_length = len(working_bundle.summary)
         working_bundle.summary = _truncate_by_tokens(
             provider=provider, text=working_bundle.summary, reduce_ratio=0.7
         )
+        if len(working_bundle.summary) >= previous_length:
+            # La troncature n'a plus d'effet (texte déjà au minimum) —
+            # on arrête pour éviter une boucle infinie. Le dépassement
+            # éventuel restant est signalé via le report retourné, comme
+            # pour recent_messages (voir docstring de la fonction).
+            break
         report = count_bundle_tokens(provider=provider, bundle=working_bundle)
 
     # 4. recent_messages n'est jamais coupé ici — s'il reste un

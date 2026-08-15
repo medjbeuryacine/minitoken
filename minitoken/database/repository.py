@@ -83,37 +83,56 @@ class MinitokenRepository:
         message_count_at_last_summary: int,
     ):
         """
-        Crée ou met à jour la mémoire d'une conversation. Incrémente
-        `version` à chaque écriture, pour la gestion de concurrence dont on
-        a parlé (deux mises à jour parallèles pour la même conversation).
+        Crée ou met à jour la mémoire d'une conversation, de façon
+        ATOMIQUE via INSERT ... ON CONFLICT DO UPDATE (upsert SQL natif).
+
+        Un SELECT-puis-INSERT/UPDATE classique souffre d'une race
+        condition sous forte concurrence : deux threads peuvent tous
+        les deux voir "aucune ligne existante" avant qu'aucun n'ait
+        écrit, et tous les deux tenter un INSERT — le second échoue
+        alors avec une UniqueViolation sur la contrainte
+        uq_conversation_memory_conversation_id (confirmé par un test de
+        charge concurrente). ON CONFLICT DO UPDATE élimine cette classe
+        de bug : Postgres gère l'atomicité lui-même, sans fenêtre entre
+        lecture et écriture.
+
+        version est incrémenté via l'expression SQL elle-même
+        (version + 1), jamais lu puis recalculé côté Python — donc
+        toujours correct même sous forte concurrence.
         """
+        import json
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
         with self._session() as session:
-            existing = (
+            table = self.models.ConversationMemory.__table__
+
+            stmt = pg_insert(table).values(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                summary=summary,
+                conversation_state=conversation_state,
+                message_count_at_last_summary=message_count_at_last_summary,
+                version=1,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["conversation_id"],
+                set_={
+                    "summary": stmt.excluded.summary,
+                    "conversation_state": stmt.excluded.conversation_state,
+                    "message_count_at_last_summary": stmt.excluded.message_count_at_last_summary,
+                    "version": table.c.version + 1,
+                },
+            ).returning(table)
+
+            result = session.execute(stmt)
+            row = result.fetchone()
+            session.commit()
+
+            return (
                 session.query(self.models.ConversationMemory)
                 .filter_by(conversation_id=conversation_id)
-                .one_or_none()
+                .one()
             )
-
-            if existing is None:
-                record = self.models.ConversationMemory(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    summary=summary,
-                    conversation_state=conversation_state,
-                    message_count_at_last_summary=message_count_at_last_summary,
-                    version=1,
-                )
-                session.add(record)
-            else:
-                existing.summary = summary
-                existing.conversation_state = conversation_state
-                existing.message_count_at_last_summary = message_count_at_last_summary
-                existing.version += 1
-                record = existing
-
-            session.commit()
-            session.refresh(record)
-            return record
 
     # ------------------------------------------------------------------
     # user_memory

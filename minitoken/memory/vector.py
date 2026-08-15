@@ -49,7 +49,7 @@ class LocalEmbedder(Embedder):
         from sentence_transformers import SentenceTransformer
 
         self._model = SentenceTransformer(self.model_name)
-        self._dimension = self._model.get_sentence_embedding_dimension()
+        self._dimension = self._model.get_embedding_dimension()
 
     @property
     def dimension(self) -> int:
