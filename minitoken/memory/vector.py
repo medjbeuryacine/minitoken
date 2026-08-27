@@ -66,7 +66,12 @@ class ApiEmbedder(Embedder):
     NVIDIA, ou tout autre fournisseur. base_url est obligatoire et
     détermine le vrai fournisseur appelé, comme pour les autres providers
     du package (aucune liste fermée).
-    """
+
+    timeout explicite (POINT robustesse) : sans lui, un appel qui échoue
+    silencieusement côté fournisseur (mauvais modèle, paramètre requis
+    manquant) peut rester bloqué indéfiniment plutôt que de lever une
+    erreur exploitable -- observé en pratique avec un modèle NVIDIA
+    retiré du service."""
 
     def __init__(self, api_key: str, model_name: str, base_url: str):
         self.model_name = model_name
@@ -74,7 +79,7 @@ class ApiEmbedder(Embedder):
 
         from openai import OpenAI
 
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=30)
 
         # La dimension dépend du modèle utilisé — on la déduit du premier
         # embedding généré plutôt que de la deviner à l'avance.
@@ -90,7 +95,23 @@ class ApiEmbedder(Embedder):
         return self._dimension
 
     def embed(self, text: str) -> list[float]:
-        response = self._client.embeddings.create(model=self.model_name, input=text)
+        # Certains modèles d'embedding NVIDIA (NeMo Retriever / Llama
+        # Nemotron Embed) exigent un paramètre "input_type" non standard
+        # OpenAI ("query" ou "passage") -- absent, l'appel peut bloquer
+        # indéfiniment ou échouer selon l'implémentation du fournisseur.
+        # "passage" par défaut : minitoken stocke autant qu'il recherche
+        # (add_memory_embedding et search_similar_embeddings utilisent le
+        # même embedder), donc un mode symétrique reste cohérent, sans
+        # distinction query/passage que le reste du code ne fait pas.
+        # Les fournisseurs qui n'attendent pas ce paramètre (OpenAI natif,
+        # par ex.) l'ignorent silencieusement s'ils le tolèrent dans le
+        # corps de la requête -- sinon, un développeur utilisant un tel
+        # fournisseur devra adapter ce point.
+        response = self._client.embeddings.create(
+            model=self.model_name,
+            input=text,
+            extra_body={"input_type": "passage"},
+        )
         vector = response.data[0].embedding
         if self._dimension is None:
             self._dimension = len(vector)
