@@ -339,12 +339,9 @@ class MinitokenClient:
                     conversation_state=existing_state,
                     message_count_at_last_summary=len(all_messages),
                 )
-        except Exception:
-            # Le résumé n'a pas pu être mis à jour (panne LLM, réseau...).
-            # On continue quand même — ce n'est pas critique, la
-            # conversation reste utilisable, le résumé sera retenté au
-            # prochain échange.
-            pass
+        except Exception as e:
+            import logging
+            logging.error(f"[MINITOKEN] Échec mise à jour du résumé (conversation_id={conversation_id}) : {e}", exc_info=True)
 
         try:
             extracted_facts = structured.extract_facts(
@@ -361,10 +358,9 @@ class MinitokenClient:
                     category=fact.category,
                     source_conversation_id=conversation_id,
                 )
-        except Exception:
-            # L'extraction de faits n'a pas pu se faire (panne LLM...).
-            # On continue quand même, même logique que ci-dessus.
-            pass
+        except Exception as e:
+            import logging
+            logging.error(f"[MINITOKEN] Échec extraction de faits (conversation_id={conversation_id}) : {e}", exc_info=True)
         try:
             exchange_text = f"User: {user_message}\nAssistant: {assistant_response}"
             embedding = self.embedder.embed(exchange_text)
@@ -375,10 +371,9 @@ class MinitokenClient:
                 embedding=embedding,
                 conversation_id=conversation_id,
             )
-        except Exception:
-            # Le stockage vectoriel a échoué (embedder local en panne,
-            # base indisponible...). On continue quand même.
-            pass
+        except Exception as e:
+            import logging
+            logging.error(f"[MINITOKEN] Échec stockage embedding (conversation_id={conversation_id}) : {e}", exc_info=True)
 
     # ------------------------------------------------------------------
 
