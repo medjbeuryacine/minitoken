@@ -242,18 +242,85 @@ class MinitokenRepository:
         scopes: list[str],
         query_embedding: list[float],
         top_k: int = 5,
+        conversation_id: uuid.UUID | None = None,
+        max_distance: float = 0.5,
     ):
         """
         Recherche de similarité vectorielle, toujours filtrée par user_id
         et scopes AVANT le calcul de similarité (jamais de recherche
-        globale non filtrée, pour la sécurité multi-user dont on a
-        parlé).
-        """
+        globale non filtrée, pour la sécurité multi-user).
+
+        conversation_id (optionnel, POINT robustesse mémoire) : si fourni,
+        priorise fortement les résultats de CETTE conversation -- résout
+        le bug observé où un fragment sémantiquement proche mais tiré
+        d'une conversation totalement différente (ex: un ancien Block
+        d'un autre fil) polluait le contexte, sans distinction avec les
+        résultats réellement pertinents pour la conversation en cours.
+        Stratégie : cherche D'ABORD dans la conversation courante ; si
+        elle ne fournit pas top_k résultats suffisants, complète avec
+        les meilleurs résultats des AUTRES conversations, mais jamais en
+        remplacement -- toujours en complément, et seulement s'ils
+        passent le seuil de pertinence.
+
+        max_distance (POINT robustesse mémoire) : cosine_distance va de 0
+        (identique) à 2 (opposé) -- pgvector, pas une similarité en %.
+        0.5 est un seuil raisonnable par défaut : au-delà, le résultat
+        n'est généralement plus pertinent, même s'il figure dans le
+        top_k techniquement le plus proche disponible. Sans ce seuil,
+        top_k=3 retourne TOUJOURS 3 résultats, même si le 3e n'a
+        presque aucun rapport avec la requête -- c'est exactement ce
+        qui causait la contamination observée (un vieux message éloigné
+        remontait simplement parce qu'aucun meilleur candidat n'existait,
+        pas parce qu'il était réellement pertinent)."""
         with self._session() as session:
             table = Table("memory_embeddings", MetaData(), autoload_with=self._engine)
-            return session.execute(
+            distance_col = table.c.embedding.cosine_distance(query_embedding).label("distance")
+
+            if conversation_id is not None:
+                # 1. Cherche d'abord dans la conversation courante uniquement.
+                same_conv_rows = session.execute(
+                    table.select()
+                    .add_columns(distance_col)
+                    .where(
+                        table.c.user_id == user_id,
+                        table.c.scope.in_(scopes),
+                        table.c.conversation_id == conversation_id,
+                    )
+                    .order_by(distance_col)
+                    .limit(top_k)
+                ).fetchall()
+                same_conv_rows = [r for r in same_conv_rows if r.distance <= max_distance]
+
+                if len(same_conv_rows) >= top_k:
+                    return same_conv_rows
+
+                # 2. Complète avec d'autres conversations SEULEMENT si la
+                # conversation courante n'a pas assez de résultats
+                # pertinents -- jamais en remplacement, toujours en plus.
+                remaining = top_k - len(same_conv_rows)
+                other_conv_rows = session.execute(
+                    table.select()
+                    .add_columns(distance_col)
+                    .where(
+                        table.c.user_id == user_id,
+                        table.c.scope.in_(scopes),
+                        table.c.conversation_id != conversation_id,
+                    )
+                    .order_by(distance_col)
+                    .limit(remaining)
+                ).fetchall()
+                other_conv_rows = [r for r in other_conv_rows if r.distance <= max_distance]
+
+                return same_conv_rows + other_conv_rows
+
+            # Pas de conversation_id fourni (rétrocompatibilité) --
+            # comportement précédent, mais avec le seuil de pertinence
+            # appliqué en plus.
+            rows = session.execute(
                 table.select()
+                .add_columns(distance_col)
                 .where(table.c.user_id == user_id, table.c.scope.in_(scopes))
-                .order_by(table.c.embedding.cosine_distance(query_embedding))
+                .order_by(distance_col)
                 .limit(top_k)
             ).fetchall()
+            return [r for r in rows if r.distance <= max_distance]

@@ -252,6 +252,7 @@ class MinitokenClient:
                 scopes=relevant_scopes,
                 query_embedding=query_embedding,
                 top_k=vector_top_k,
+                conversation_id=conversation_id,
             )
             vector_memories = [row.content for row in rows]
 
@@ -298,6 +299,8 @@ class MinitokenClient:
         user_memory, sans lever d'exception qui remonterait jusqu'à
         l'appelant (voir memory/structured.py).
         """
+        import logging
+        logging.warning(f"[MINITOKEN_DEBUG] record_exchange DÉMARRE pour conversation_id={conversation_id}")
         try:
             conversation_memory = self.repository.get_conversation_memory(conversation_id)
             message_count_at_last_summary = (
@@ -306,12 +309,19 @@ class MinitokenClient:
             existing_summary = conversation_memory.summary if conversation_memory else ""
             existing_state = conversation_memory.conversation_state if conversation_memory else {}
 
-            if short_term.needs_summarization(
+            should_summarize = short_term.needs_summarization(
                 total_message_count=len(all_messages),
                 message_count_at_last_summary=message_count_at_last_summary,
                 keep_recent_count=keep_recent_count,
                 resummarize_every=resummarize_every,
-            ):
+            )
+            logging.warning(
+                f"[MINITOKEN_DEBUG] total_messages={len(all_messages)} "
+                f"message_count_at_last_summary={message_count_at_last_summary} "
+                f"keep_recent_count={keep_recent_count} resummarize_every={resummarize_every} "
+                f"should_summarize={should_summarize}"
+            )
+            if should_summarize:
                 window = short_term.split_recent_messages(
                     all_messages=all_messages, keep_recent_count=keep_recent_count
                 )
@@ -339,6 +349,7 @@ class MinitokenClient:
                     conversation_state=existing_state,
                     message_count_at_last_summary=len(all_messages),
                 )
+                logging.warning(f"[MINITOKEN_DEBUG] upsert_conversation_memory RÉUSSI pour conversation_id={conversation_id}")
         except Exception as e:
             import logging
             logging.error(f"[MINITOKEN] Échec mise à jour du résumé (conversation_id={conversation_id}) : {e}", exc_info=True)
