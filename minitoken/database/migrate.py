@@ -65,17 +65,32 @@ def apply_migrations(*, repository: MinitokenRepository, embedder: Embedder) -> 
     dimension = embedder.dimension
     table_name = repository.models.MemoryEmbedding.__tablename__
 
+    # POINT robustesse (limite pgvector) : le type "vector" standard ne
+    # peut pas être indexé au-delà de 2000 dimensions (limite dure de
+    # pgvector, ivfflat ET hnsw -- pas une limitation de notre choix
+    # d'index, une limite de PostgreSQL lui-même : chaque tuple d'index
+    # doit tenir dans une page de 8 Ko). Les modèles d'embedding modernes
+    # dépassent couramment cette limite (ex: 2048 dimensions pour
+    # certains modèles NVIDIA). Le type "halfvec" (flottants 16 bits au
+    # lieu de 32) double la limite indexable à 4000 dimensions, au prix
+    # d'une précision légèrement réduite -- négligeable pour de la
+    # recherche de similarité sémantique. Au-delà de 2000 dimensions, on
+    # bascule automatiquement sur halfvec ; en dessous, on garde vector
+    # (pleine précision) comme avant, sans changement de comportement
+    # pour les développeurs utilisant des modèles plus petits.
+    use_halfvec = dimension > 2000
+    vector_type = "halfvec" if use_halfvec else "vector"
+
     with engine.begin() as connection:
         connection.execute(
             text(
                 f"ALTER TABLE {table_name} "
-                f"ADD COLUMN IF NOT EXISTS embedding vector({dimension})"
+                f"ADD COLUMN IF NOT EXISTS embedding {vector_type}({dimension})"
             )
         )
         connection.execute(
             text(
                 f"CREATE INDEX IF NOT EXISTS {_VECTOR_INDEX_NAME} "
-                f"ON {table_name} USING ivfflat (embedding vector_cosine_ops) "
-                f"WITH (lists = 100)"
+                f"ON {table_name} USING hnsw (embedding {vector_type}_cosine_ops)"
             )
         )
