@@ -1,27 +1,44 @@
 """
-Mémoire structurée (structured memory) : extraction de faits durables +
-classification par scope.
+Mémoire structurée (structured memory) : extraction de faits durables,
+classification par scope/type, et identification par clé logique stable.
 
 Après un échange (message utilisateur + réponse de l'agent), un appel LLM
 léger extrait les faits à retenir dans user_memory, et classe chacun comme
 "global" (vrai pour tous les agents) ou "agent_specific" (propre à l'agent
-concerné par CETTE conversation). Le code résout ensuite "agent_specific"
-en le scope réel (ex: "coach_ia"), à partir du contexte connu de l'appelant
-— le LLM n'a pas besoin de connaître le nom exact de l'agent pour classer.
+concerné par CETTE conversation), ainsi que par un type fixe (voir
+USER_MEMORY_TYPES) qui sert à organiser l'affichage côté frontend en
+sections claires et éditables (Profil / Préférences / Objectifs /
+Projets / Faits). Le code résout ensuite "agent_specific" en le scope
+réel (ex: "coach_ia"), à partir du contexte connu de l'appelant — le LLM
+n'a pas besoin de connaître le nom exact de l'agent pour classer.
+
+POINT mémoire source de vérité : chaque fait reçoit aussi une
+"memory_key", un identifiant logique STABLE (ex: "bench_press_goal")
+destiné à repérer qu'un nouveau fait MET À JOUR un fait déjà connu,
+plutôt que d'en créer un doublon -- plus fiable qu'une simple
+correspondance type+category, qui peut légèrement varier d'un appel à
+l'autre selon la formulation du LLM. Pour maximiser la stabilité, le LLM
+reçoit la liste des memory_key déjà connues de cet utilisateur (voir
+existing_memory_keys), et doit réutiliser une clé existante si le
+nouveau fait parle du même sujet, plutôt que d'en inventer une nouvelle.
 
 Le prompt seul n'est PAS fiable à 100% sur un petit modèle (8B) : plus on
 ajoute de règles au prompt, plus le modèle se perd et invente de nouveaux
 types d'erreurs. La stratégie retenue : un prompt SIMPLE et stable, plus
-un filtre déterministe en Python en complément (_is_likely_meta_fact),
-qui ne dépend jamais de la fiabilité du modèle.
+des filtres déterministes en Python en complément (_is_likely_meta_fact,
+la validation du type, le filet de repli sur category si memory_key est
+absent), qui ne dépendent jamais de la fiabilité du modèle.
 """
 
 import json
 from dataclasses import dataclass
 
+from minitoken.database.models import USER_MEMORY_TYPES
 from minitoken.providers.base import ChatMessage, LLMProvider
 
-_EXTRACTION_SYSTEM_PROMPT = """Tu analyses un échange entre un utilisateur \
+_TYPES_LIST = ", ".join(f'"{t}"' for t in USER_MEMORY_TYPES)
+
+_EXTRACTION_SYSTEM_PROMPT_TEMPLATE = f"""Tu analyses un échange entre un utilisateur \
 et un assistant IA. Extrais uniquement les faits DURABLES et PERSONNELS \
 que l'utilisateur affirme sur lui-même (prénom, préférences, objectifs, \
 contraintes, contexte de vie stable).
@@ -39,12 +56,35 @@ Pour chaque fait, indique un scope :
 - "global" : vrai pour l'utilisateur en général (prénom, préférences de communication, contexte de vie/travail stable).
 - "agent_specific" : donnée propre au sujet traité dans cette conversation (objectifs, contraintes, historique liés à ce domaine).
 
+Pour chaque fait, indique aussi un "type", qui doit être EXACTEMENT l'une \
+de ces {len(USER_MEMORY_TYPES)} valeurs, jamais une autre : {_TYPES_LIST}.
+- "profile" : identité stable (prénom, métier, langue, situation de vie).
+- "preference" : façon dont l'utilisateur aime interagir (style de réponse, niveau de détail).
+- "goal" : un objectif que l'utilisateur veut atteindre.
+- "project" : ce sur quoi l'utilisateur travaille actuellement.
+- "fact" : toute autre information durable qui ne rentre dans aucune des catégories ci-dessus (contraintes, antécédents, habitudes).
+
+Pour chaque fait, indique aussi une "category" COURTE et STABLE (2-3 mots \
+maximum, en minuscules, toujours la même formulation pour un même type \
+de fait -- ex: toujours "prénom", jamais "nom" une fois et "identité" une \
+autre fois). Cette category est OBLIGATOIRE, jamais omise.
+
+Pour chaque fait, indique enfin une "memory_key" : un identifiant COURT, \
+STABLE, en minuscules avec underscores (ex: "bench_press_goal", \
+"first_name", "preferred_language"), qui identifie le SUJET précis du \
+fait, indépendamment de sa formulation exacte. C'est la clé la plus \
+importante : si l'utilisateur donne une nouvelle valeur pour un sujet \
+déjà connu (ex: change son objectif, change son métier), la memory_key \
+DOIT être EXACTEMENT identique à celle déjà utilisée pour ce sujet, \
+même si la formulation du fait change complètement.
+{{existing_keys_section}}
 Exemples :
-- "Mon prénom est Karim" -> {"fact": "S'appelle Karim", "scope": "global"}
-- "Je préfère des réponses courtes" -> {"fact": "Préfère réponses courtes", "scope": "global"}
-- "Mon objectif est 100kg au développé couché" -> {"fact": "Objectif 100kg développé couché", "scope": "agent_specific"}
-- "Je m'entraîne lundi, mercredi, vendredi" -> {"fact": "S'entraîne lundi/mercredi/vendredi", "scope": "agent_specific"}
-- "Je ne veux pas faire de squat, opération au genou" -> [{"fact": "Refuse de faire du squat", "scope": "agent_specific"}, {"fact": "A eu une opération au genou", "scope": "agent_specific"}]
+- "Mon prénom est Karim" -> {{{{"fact": "S'appelle Karim", "scope": "global", "type": "profile", "category": "prénom", "memory_key": "first_name"}}}}
+- "Je préfère des réponses courtes" -> {{{{"fact": "Préfère réponses courtes", "scope": "global", "type": "preference", "category": "style de réponse", "memory_key": "response_style"}}}}
+- "Mon objectif est 100kg au développé couché" -> {{{{"fact": "Objectif 100kg développé couché", "scope": "agent_specific", "type": "goal", "category": "objectif force", "memory_key": "bench_press_goal"}}}}
+- "Je m'entraîne lundi, mercredi, vendredi" -> {{{{"fact": "S'entraîne lundi/mercredi/vendredi", "scope": "agent_specific", "type": "fact", "category": "jours d'entraînement", "memory_key": "training_days"}}}}
+- "Je construis une app SaaS avec React et Python" -> {{{{"fact": "Construit une app SaaS avec React et Python", "scope": "global", "type": "project", "category": "projet en cours", "memory_key": "current_project"}}}}
+- "Je ne veux pas faire de squat, opération au genou" -> [{{{{"fact": "Refuse de faire du squat", "scope": "agent_specific", "type": "fact", "category": "restriction exercice", "memory_key": "squat_restriction"}}}}, {{{{"fact": "A eu une opération au genou", "scope": "agent_specific", "type": "fact", "category": "antécédent médical", "memory_key": "knee_surgery"}}}}]
 - "Quel est le meilleur cardio pour débutant ?" -> aucun fait (question générale)
 - "Combien d'entraînements par semaine ?" -> aucun fait (question, pas affirmation)
 - "Un ami s'entraîne 6 fois par semaine, c'est trop ?" -> aucun fait (parle d'un tiers)
@@ -52,7 +92,8 @@ Exemples :
 Si aucun fait personnel n'est donné, réponds avec une liste vide.
 
 Réponds UNIQUEMENT avec un JSON valide, sans texte autour, au format :
-[{"fact": "...", "scope": "global" | "agent_specific", "category": "..."}]
+[{{{{"fact": "...", "scope": "global" | "agent_specific", "type": "...", "category": "...", "memory_key": "..."}}}}]
+Le type, la category et la memory_key ne doivent JAMAIS être omis ou vides.
 """
 
 
@@ -60,7 +101,9 @@ Réponds UNIQUEMENT avec un JSON valide, sans texte autour, au format :
 class ExtractedFact:
     fact: str
     scope: str  # résolu : "global" ou le nom réel de l'agent
+    type: str = "fact"
     category: str | None = None
+    memory_key: str | None = None
 
 
 def extract_facts(
@@ -69,12 +112,19 @@ def extract_facts(
     current_agent_scope: str,
     user_message: str,
     assistant_response: str,
+    existing_memory_keys: list[str] | None = None,
 ) -> list[ExtractedFact]:
     """
     Extrait les faits durables d'un échange, et résout leur scope :
     - "global" reste "global"
     - "agent_specific" devient `current_agent_scope` (l'agent réellement
       concerné par cette conversation, connu de l'appelant, pas du LLM)
+
+    existing_memory_keys (optionnel) : liste des memory_key déjà connues
+    de cet utilisateur (tous scopes confondus), injectée dans le prompt
+    pour que le LLM réutilise une clé existante plutôt que d'en inventer
+    une nouvelle pour le même sujet. Passer None ou une liste vide si
+    l'utilisateur n'a encore aucun fait connu.
 
     Retourne une liste vide si rien à extraire ou si la réponse du LLM
     n'a pas pu être parsée (on ignore silencieusement plutôt que de
@@ -84,8 +134,24 @@ def extract_facts(
     Un filtre déterministe (_is_likely_meta_fact) élimine en plus les
     faits qui décrivent le sujet d'une question plutôt qu'une vraie info
     sur l'utilisateur — un garde-fou technique qui ne dépend pas de la
-    fiabilité du modèle.
+    fiabilité du modèle. Le type est validé contre USER_MEMORY_TYPES —
+    jamais fait confiance aveuglément au LLM, même avec le prompt à jour.
+    memory_key retombe sur un filet de repli déterministe (basé sur
+    category) si le LLM l'omet malgré tout.
     """
+    if existing_memory_keys:
+        keys_list = ", ".join(f'"{k}"' for k in existing_memory_keys)
+        existing_keys_section = (
+            f"\nClés déjà connues pour cet utilisateur, à réutiliser si le "
+            f"nouveau fait parle du même sujet : {keys_list}.\n"
+        )
+    else:
+        existing_keys_section = ""
+
+    system_prompt = _EXTRACTION_SYSTEM_PROMPT_TEMPLATE.format(
+        existing_keys_section=existing_keys_section
+    )
+
     user_content = (
         f"Message utilisateur :\n{user_message}\n\n"
         f"Réponse de l'assistant :\n{assistant_response}"
@@ -93,7 +159,7 @@ def extract_facts(
 
     result = provider.generate(
         messages=[
-            ChatMessage(role="system", content=_EXTRACTION_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=user_content),
         ],
         max_tokens=400,
@@ -119,11 +185,44 @@ def extract_facts(
 
         resolved_scope = "global" if raw_scope == "global" else current_agent_scope
 
+        raw_type = item.get("type")
+        if not raw_type or not isinstance(raw_type, str) or raw_type.strip().lower() not in USER_MEMORY_TYPES:
+            # Filet de sécurité déterministe : si le LLM renvoie un type
+            # absent, vide, ou inventé (hors des 5 valeurs autorisées),
+            # on retombe sur "fact" -- la valeur la plus générique,
+            # jamais une exception qui casserait tout le flux d'extraction.
+            fact_type = "fact"
+        else:
+            fact_type = raw_type.strip().lower()
+
+        category = item.get("category")
+        if not category or not isinstance(category, str) or not category.strip():
+            # Filet de sécurité déterministe : si le LLM omet category
+            # malgré l'instruction et les exemples, on en déduit une
+            # valeur de repli grossière à partir du fait lui-même --
+            # imparfait, mais mieux qu'une déduplication totalement
+            # inactive.
+            category = " ".join(fact_text.lower().split()[:4])
+        category = category.strip().lower()
+
+        memory_key = item.get("memory_key")
+        if not memory_key or not isinstance(memory_key, str) or not memory_key.strip():
+            # Filet de sécurité déterministe : si le LLM omet memory_key
+            # malgré l'instruction et les exemples, on retombe sur
+            # type+category comme clé de repli -- moins stable qu'une
+            # vraie memory_key réfléchie par le LLM, mais toujours mieux
+            # qu'aucune déduplication du tout.
+            memory_key = f"{fact_type}_{category}".replace(" ", "_")
+        else:
+            memory_key = memory_key.strip().lower().replace(" ", "_")
+
         resolved_facts.append(
             ExtractedFact(
                 fact=fact_text,
                 scope=resolved_scope,
-                category=item.get("category"),
+                type=fact_type,
+                category=category,
+                memory_key=memory_key,
             )
         )
 
@@ -138,7 +237,6 @@ def _parse_llm_json(raw_content: str) -> list[dict] | None:
     """
     cleaned = raw_content.strip()
 
-    # Tolère un éventuel wrapping en balises markdown ```json ... ```
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
         if cleaned.startswith("json"):

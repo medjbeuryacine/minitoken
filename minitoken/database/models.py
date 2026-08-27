@@ -40,6 +40,11 @@ class MinitokenModels:
     MemoryEmbedding: type
     RateLimitEvent: type
 
+# Types fixes possibles pour UserMemory.type -- utilisés à la fois côté
+# validation (repository.add_user_fact) et côté prompt d'extraction
+# (structured.py), pour que les deux restent toujours synchronisés.
+USER_MEMORY_TYPES = ["profile", "preference", "goal", "project", "fact"]
+
 def build_models(config: MinitokenConfig) -> MinitokenModels:
     """
     Construit les 3 tables de minitoken (conversation_memory, user_memory,
@@ -95,7 +100,38 @@ def build_models(config: MinitokenConfig) -> MinitokenModels:
         # ("global" ou un nom d'agent précis).
         scope = Column(String(100), nullable=False, default="global", index=True)
 
+        # POINT structuration mémoire : type FIXE et fiable (contrairement
+        # à category, texte libre imprévisible côté LLM) -- une des 5
+        # valeurs de _USER_MEMORY_TYPES ("profile", "preference", "goal",
+        # "project", "fact"). Sert à afficher des sections propres et
+        # éditables côté frontend (ex: "Profil" / "Préférences" /
+        # "Objectifs" / "Projets" / "Faits"), plutôt que de deviner un
+        # regroupement à partir de category. Validé côté Python à
+        # l'écriture (voir repository.add_user_fact), pas de contrainte
+        # SQL CHECK pour rester simple à migrer si de nouveaux types
+        # s'ajoutent plus tard.
+        type = Column(String(50), nullable=False, default="fact", index=True)
+
+        # Sous-catégorie libre à l'intérieur d'un type -- ex: type="goal",
+        # category="force". N'est plus le mécanisme principal de
+        # déduplication (voir memory_key ci-dessous), gardé comme filet
+        # de repli si memory_key est absent.
         category = Column(String(100), nullable=True)
+
+        # POINT mémoire source de vérité (architecture "user_memory =
+        # source de vérité, memory_embeddings = index de recherche") :
+        # identifiant logique STABLE d'un fait précis (ex:
+        # "bench_press_goal"), fourni par le LLM d'extraction à partir de
+        # la liste des clés déjà connues de cet utilisateur (voir
+        # structured.py) -- plus fiable qu'une simple correspondance
+        # type+category, qui peut légèrement varier d'un appel à l'autre
+        # selon la formulation du LLM. Deux faits partageant la même
+        # memory_key pour le même user_id/scope représentent LA MÊME
+        # information dans le temps -- le second met à jour le premier
+        # (même id conservé), jamais un doublon créé. Nullable : un fait
+        # sans memory_key (LLM n'en a pas fourni) retombe sur la
+        # déduplication par type+category, comme avant.
+        memory_key = Column(String(150), nullable=True, index=True)
 
         # Traçabilité uniquement — pas une contrainte de filtrage.
         source_conversation_id = Column(
@@ -131,6 +167,22 @@ def build_models(config: MinitokenConfig) -> MinitokenModels:
         # connue de façon statique ici.
 
         importance_score = Column(Integer, nullable=True)  # 0-100, optionnel
+
+        # POINT mémoire source de vérité : lien optionnel vers le fait
+        # user_memory dont cet embedding est la projection vectorielle
+        # (voir UserMemory.memory_key). NULL pour les embeddings de
+        # conversation brute (échanges complets, jamais liés à un fait
+        # précis -- voir client.py record_exchange). Non-NULL pour les
+        # embeddings générés à partir d'un fait structuré : dans ce cas,
+        # quand le fait est mis à jour (même memory_key), CET embedding
+        # est mis à jour en place (même id, nouveau vecteur), jamais
+        # dupliqué -- élimine structurellement le risque de deux
+        # souvenirs contradictoires coexistant en mémoire vectorielle
+        # (ex: "objectif 100kg" et "objectif 140kg" tous les deux
+        # présents en même temps).
+        user_memory_id = Column(
+            UUID(as_uuid=True), ForeignKey("user_memory.id", ondelete="CASCADE"), nullable=True, index=True
+        )
 
         created_at = Column(DateTime(timezone=True), server_default=func.now())
 

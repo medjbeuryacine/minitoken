@@ -73,9 +73,21 @@ class ApiEmbedder(Embedder):
     erreur exploitable -- observé en pratique avec un modèle NVIDIA
     retiré du service."""
 
-    def __init__(self, api_key: str, model_name: str, base_url: str):
+    # Repli par défaut si extra_params n'est pas fourni par le
+    # développeur -- certains modèles d'embedding NVIDIA (NeMo Retriever
+    # / Llama Nemotron Embed) exigent ce paramètre non standard OpenAI
+    # pour fonctionner du tout. "passage" par défaut : minitoken stocke
+    # autant qu'il recherche (add_memory_embedding et
+    # search_similar_embeddings utilisent le même embedder), donc un
+    # mode symétrique reste cohérent. Un développeur utilisant un
+    # fournisseur qui n'attend pas ce paramètre peut l'écraser via
+    # embedding_extra_params={} dans sa config.
+    _DEFAULT_EXTRA_PARAMS = {"input_type": "passage"}
+
+    def __init__(self, api_key: str, model_name: str, base_url: str, extra_params: dict | None = None):
         self.model_name = model_name
         self.base_url = base_url
+        self.extra_params = extra_params if extra_params is not None else self._DEFAULT_EXTRA_PARAMS
 
         from openai import OpenAI
 
@@ -95,22 +107,10 @@ class ApiEmbedder(Embedder):
         return self._dimension
 
     def embed(self, text: str) -> list[float]:
-        # Certains modèles d'embedding NVIDIA (NeMo Retriever / Llama
-        # Nemotron Embed) exigent un paramètre "input_type" non standard
-        # OpenAI ("query" ou "passage") -- absent, l'appel peut bloquer
-        # indéfiniment ou échouer selon l'implémentation du fournisseur.
-        # "passage" par défaut : minitoken stocke autant qu'il recherche
-        # (add_memory_embedding et search_similar_embeddings utilisent le
-        # même embedder), donc un mode symétrique reste cohérent, sans
-        # distinction query/passage que le reste du code ne fait pas.
-        # Les fournisseurs qui n'attendent pas ce paramètre (OpenAI natif,
-        # par ex.) l'ignorent silencieusement s'ils le tolèrent dans le
-        # corps de la requête -- sinon, un développeur utilisant un tel
-        # fournisseur devra adapter ce point.
         response = self._client.embeddings.create(
             model=self.model_name,
             input=text,
-            extra_body={"input_type": "passage"},
+            extra_body=self.extra_params or None,
         )
         vector = response.data[0].embedding
         if self._dimension is None:
@@ -131,6 +131,7 @@ def get_embedder(config: MinitokenConfig) -> Embedder:
             api_key=config.embedding_api_key,
             model_name=config.embedding_model,
             base_url=config.embedding_base_url,
+            extra_params=config.embedding_extra_params,
         )
 
     raise ValueError(f"embedding_provider '{config.embedding_provider}' non supporté.")

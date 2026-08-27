@@ -44,10 +44,14 @@ class LLMProvider(ABC):
     anthropic_provider.py, ...) doit implémenter.
     """
 
-    def __init__(self, api_key: str, model: str, rate_limiter=None):
+    def __init__(self, api_key: str, model: str, rate_limiter=None, extra_params: dict | None = None):
         self.api_key = api_key
         self.model = model
         self._rate_limiter = rate_limiter
+        # Paramètres additionnels (extra_body) propres à un fournisseur/
+        # modèle précis, transmis tels quels par les implémentations
+        # concrètes -- voir openai_compatible.py pour leur usage réel.
+        self.extra_params = extra_params or {}
 
     @abstractmethod
     def generate(self, messages: list[ChatMessage], max_tokens: int = 1000) -> CompletionResult:

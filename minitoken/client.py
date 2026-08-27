@@ -19,7 +19,6 @@ from minitoken.config import MinitokenConfig
 from minitoken.database.repository import MinitokenRepository
 from minitoken.memory import short_term, structured, summary
 from minitoken.memory.vector import Embedder, get_embedder
-from minitoken.memory.prompt_compression import Compressor, get_compressor
 from minitoken.providers import ChatMessage, LLMProvider, build_provider
 from minitoken.token_budget.rate_limiter import RateLimiter
 from minitoken.token_budget.counter import ContextBundle, TokenReport, count_bundle_tokens
@@ -70,10 +69,10 @@ class MinitokenClient:
             api_key=config.extraction_api_key,
             base_url=config.extraction_base_url,
             rate_limiter=extraction_limiter,
+            extra_params=config.extraction_extra_params,
         )
 
         self.embedder = embedder or get_embedder(config)
-        self.compressor: Compressor = get_compressor(config, self.extraction_provider)
 
     def initialize(self) -> None:
         """À appeler une fois, au démarrage de l'application hôte : active
@@ -198,14 +197,6 @@ class MinitokenClient:
             _add_metric("tokens_per_day", cfg.tokens_per_day, timedelta(days=1), "sum")
 
         return status
-
-    def compress_user_message(self, message: str) -> str:
-        """Compresse une question utilisateur avant envoi au LLM principal,
-        selon compression_mode configuré. Retourne le texte inchangé si
-        compression_mode='none' (défaut) — appel explicite et optionnel,
-        jamais automatique dans get_context()."""
-        return self.compressor.compress(message, self.config.compression_target_ratio)
-
     
     # ------------------------------------------------------------------
     # Avant la réponse principale : construire le contexte optimisé
@@ -299,8 +290,7 @@ class MinitokenClient:
         user_memory, sans lever d'exception qui remonterait jusqu'à
         l'appelant (voir memory/structured.py).
         """
-        import logging
-        logging.warning(f"[MINITOKEN_DEBUG] record_exchange DÉMARRE pour conversation_id={conversation_id}")
+
         try:
             conversation_memory = self.repository.get_conversation_memory(conversation_id)
             message_count_at_last_summary = (
@@ -315,12 +305,6 @@ class MinitokenClient:
                 keep_recent_count=keep_recent_count,
                 resummarize_every=resummarize_every,
             )
-            logging.warning(
-                f"[MINITOKEN_DEBUG] total_messages={len(all_messages)} "
-                f"message_count_at_last_summary={message_count_at_last_summary} "
-                f"keep_recent_count={keep_recent_count} resummarize_every={resummarize_every} "
-                f"should_summarize={should_summarize}"
-            )
             if should_summarize:
                 window = short_term.split_recent_messages(
                     all_messages=all_messages, keep_recent_count=keep_recent_count
@@ -330,17 +314,11 @@ class MinitokenClient:
                     existing_summary=existing_summary,
                     messages_to_summarize=window.messages_to_summarize,
                 )
-                if self.config.compression_mode != "none":
-                    if self.token_counter_provider.count_tokens(new_summary) > summary_max_tokens:
-                        new_summary = self.compressor.compress(
-                            new_summary, self.config.compression_target_ratio
-                        )
-                else:
-                    new_summary = summary.recompress_if_too_long(
-                        provider=self.extraction_provider,
-                        summary=new_summary,
-                        max_tokens=summary_max_tokens,
-                    )
+                new_summary = summary.recompress_if_too_long(
+                    provider=self.extraction_provider,
+                    summary=new_summary,
+                    max_tokens=summary_max_tokens,
+                )
 
                 self.repository.upsert_conversation_memory(
                     conversation_id=conversation_id,
@@ -349,25 +327,38 @@ class MinitokenClient:
                     conversation_state=existing_state,
                     message_count_at_last_summary=len(all_messages),
                 )
-                logging.warning(f"[MINITOKEN_DEBUG] upsert_conversation_memory RÉUSSI pour conversation_id={conversation_id}")
         except Exception as e:
             import logging
             logging.error(f"[MINITOKEN] Échec mise à jour du résumé (conversation_id={conversation_id}) : {e}", exc_info=True)
 
         try:
+            existing_keys = self.repository.get_user_memory_keys(user_id=user_id)
             extracted_facts = structured.extract_facts(
                 provider=self.extraction_provider,
                 current_agent_scope=agent_scope,
                 user_message=user_message,
                 assistant_response=assistant_response,
+                existing_memory_keys=existing_keys,
             )
             for fact in extracted_facts:
+                # POINT mémoire source de vérité : un embedding est
+                # calculé pour CHAQUE fait structuré, et lié à lui via
+                # memory_key -- add_user_fact met à jour cet embedding
+                # en place si le fait existait déjà (même memory_key),
+                # au lieu d'en créer un nouveau à côté de l'ancien.
+                # C'est ce qui élimine le risque de deux souvenirs
+                # vectoriels contradictoires (ex: "objectif 100kg" et
+                # "objectif 140kg" coexistant en mémoire vectorielle).
+                fact_embedding = self.embedder.embed(fact.fact)
                 self.repository.add_user_fact(
                     user_id=user_id,
                     fact=fact.fact,
                     scope=fact.scope,
+                    type=fact.type,
                     category=fact.category,
+                    memory_key=fact.memory_key,
                     source_conversation_id=conversation_id,
+                    embedding=fact_embedding,
                 )
         except Exception as e:
             import logging
@@ -381,6 +372,7 @@ class MinitokenClient:
                 scope=agent_scope,
                 embedding=embedding,
                 conversation_id=conversation_id,
+                max_per_user_scope=self.config.max_embeddings_per_user_scope,
             )
         except Exception as e:
             import logging

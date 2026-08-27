@@ -11,7 +11,6 @@ from typing import Literal, Optional
 from minitoken.token_budget.rate_limiter import RateLimitConfig
 
 EmbeddingProviderName = Literal["local", "api"]
-CompressionProviderName = Literal["local", "extraction_llm", "none"]
 
 # provider_name n'est plus restreint à une liste fermée : c'est un nom
 # libre ("groq", "openai", "nvidia", "mistral", ou n'importe quel autre).
@@ -65,23 +64,13 @@ class MinitokenConfig:
     token_counter_base_url: Optional[str] = None
     extraction_base_url: Optional[str] = None
 
-    # --- Compression de texte (résumé trop long + question utilisateur) ---
-    # "local"  : LLMLingua-2, tourne en local, gratuit, extractif (pas de
-    #            reformulation, sélectionne juste les tokens essentiels).
-    # "api"    : utilise un LLM génératif via API (config compression_llm_*
-    #            ci-dessous), indépendant de extraction_provider.
-    # "none"   : désactivé (comportement par défaut, rien ne change).
-    compression_mode: Literal["local", "api", "none"] = "none"
-    compression_target_ratio: float = 0.5
+    # Paramètres additionnels passés tels quels (extra_body) à l'appel
+    # /chat/completions du provider d'extraction — permet d'activer des
+    # options propres à un fournisseur/modèle précis (ex: un mode
+    # raisonnement/thinking) sans jamais avoir à modifier le code de
+    # minitoken. Optionnel, aucun paramètre extra par défaut.
+    extraction_extra_params: Optional[dict] = None
 
-    # Utilisés uniquement si compression_mode="api". Config totalement
-    # indépendante de extraction_provider — un développeur peut choisir un
-    # provider différent ici, ce n'est jamais lié automatiquement.
-    compression_llm_provider: Optional[str] = None
-    compression_llm_model: Optional[str] = None
-    compression_llm_api_key: Optional[str] = None
-    compression_llm_base_url: Optional[str] = None
-    
     # --- Mémoire vectorielle ---
     # "local" : sentence-transformers, tourne en local, gratuit, aucune
     #           clé requise.
@@ -92,6 +81,14 @@ class MinitokenConfig:
     embedding_model: Optional[str] = None  # requis seulement si embedding_provider="api"
     embedding_api_key: Optional[str] = None
     embedding_base_url: Optional[str] = None
+
+    # Paramètres additionnels passés tels quels (extra_body) à l'appel
+    # /embeddings du provider — certains fournisseurs (ex: les modèles
+    # d'embedding NVIDIA NeMo Retriever) exigent des paramètres non
+    # standards OpenAI (ex: "input_type": "query" | "passage") pour
+    # fonctionner correctement. Optionnel ; si non fourni, aucun
+    # paramètre extra n'est envoyé.
+    embedding_extra_params: Optional[dict] = None
 
     # --- Budget de tokens ---
     token_budget_max: int = 8000
@@ -104,13 +101,19 @@ class MinitokenConfig:
     # Si None (défaut), aucun throttling n'est appliqué pour ce provider.
     token_counter_rate_limit: Optional["RateLimitConfig"] = None
     extraction_rate_limit: Optional["RateLimitConfig"] = None
-    compression_rate_limit: Optional["RateLimitConfig"] = None
 
     # --- Limite du nombre de faits récupérés par get_context() ---
     # Empêche qu'un historique de faits accumulé sur des mois d'usage ne
     # fasse exploser le budget de tokens à chaque appel. Les faits les
     # plus récents (par updated_at) sont toujours prioritaires.
     max_user_facts: int = 30
+
+    # --- Cap du nombre d'embeddings conservés par user_id/scope ---
+    # Nettoyage au fil de l'eau (voir repository.add_memory_embedding) :
+    # dès que ce seuil est dépassé pour un couple user/scope, les
+    # embeddings les plus anciens sont supprimés automatiquement.
+    # Empêche memory_embeddings de grossir indéfiniment sur la durée.
+    max_embeddings_per_user_scope: int = 500
 
     def __post_init__(self):
         self._validate()
@@ -168,22 +171,6 @@ class MinitokenConfig:
                 raise ValueError(
                     "embedding_model est obligatoire quand embedding_provider='api'."
                 )
-
-        if self.compression_mode == "api":
-            if not (self.compression_llm_provider and self.compression_llm_model and self.compression_llm_api_key):
-                raise ValueError(
-                    "compression_llm_provider, compression_llm_model et "
-                    "compression_llm_api_key sont obligatoires quand "
-                    "compression_mode='llm'."
-                )
-            if self.compression_llm_provider != "anthropic" and not self.compression_llm_base_url:
-                raise ValueError(
-                    "compression_llm_base_url est obligatoire quand "
-                    "compression_llm_provider n'est pas 'anthropic'."
-                )
-
-        if not (0 < self.compression_target_ratio <= 1):
-            raise ValueError("compression_target_ratio doit être entre 0 et 1 (exclu 0).")
 
         if self.token_budget_max <= 0:
             raise ValueError("token_budget_max doit être un entier positif.")

@@ -15,7 +15,7 @@ from minitoken.providers.base import ChatMessage, CompletionResult, LLMProvider
 
 
 class OpenAICompatibleProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str, base_url: str, provider_label: str | None = None, rate_limiter=None):
+    def __init__(self, api_key: str, model: str, base_url: str, provider_label: str | None = None, rate_limiter=None, extra_params: dict | None = None):
         """
         base_url : l'URL de base de votre fournisseur OpenAI-compatible
                    (ex: "https://api.groq.com/openai/v1",
@@ -24,8 +24,13 @@ class OpenAICompatibleProvider(LLMProvider):
                    API respectant le format OpenAI).
         provider_label : nom libre, uniquement informatif (logs, messages
                    d'erreur) — n'affecte pas le comportement.
+        extra_params : paramètres additionnels envoyés tels quels
+                   (extra_body) à chaque appel /chat/completions -- utile
+                   pour activer une option propre à un fournisseur/modèle
+                   précis (ex: un mode raisonnement/thinking), sans
+                   jamais avoir à modifier ce fichier.
         """
-        super().__init__(api_key=api_key, model=model, rate_limiter=rate_limiter)
+        super().__init__(api_key=api_key, model=model, rate_limiter=rate_limiter, extra_params=extra_params)
 
         if not base_url:
             raise ValueError(
@@ -76,6 +81,7 @@ class OpenAICompatibleProvider(LLMProvider):
             model=self.model,
             max_tokens=max_tokens,
             messages=[{"role": m.role, "content": m.content} for m in messages],
+            extra_body=self.extra_params or None,
         )
         response = raw_response.parse()
         headers = raw_response.headers

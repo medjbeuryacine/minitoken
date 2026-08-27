@@ -138,55 +138,225 @@ class MinitokenRepository:
     # user_memory
     # ------------------------------------------------------------------
 
+    def get_user_memory_keys(self, *, user_id: uuid.UUID) -> list[str]:
+        """
+        Retourne la liste des memory_key déjà connues pour cet
+        utilisateur (tous scopes confondus, valeurs non-NULL
+        uniquement) -- à passer à structured.extract_facts() pour que
+        le LLM réutilise une clé existante plutôt que d'en inventer une
+        nouvelle pour un sujet déjà connu."""
+        with self._session() as session:
+            rows = (
+                session.query(self.models.UserMemory.memory_key)
+                .filter(
+                    self.models.UserMemory.user_id == user_id,
+                    self.models.UserMemory.memory_key.isnot(None),
+                )
+                .distinct()
+                .all()
+            )
+            return [r[0] for r in rows]
+
     def add_user_fact(
         self,
         *,
         user_id: uuid.UUID,
         fact: str,
         scope: str,
+        type: str = "fact",
         category: str | None = None,
+        memory_key: str | None = None,
         source_conversation_id: uuid.UUID | None = None,
         confidence: int | None = None,
+        embedding: list[float] | None = None,
     ):
+        """
+        POINT structuration mémoire : type doit être une des valeurs de
+        USER_MEMORY_TYPES -- validé ici, jamais fait confiance
+        aveuglément à l'appelant.
+
+        POINT mémoire source de vérité (architecture "user_memory =
+        source de vérité, memory_embeddings = index de recherche") :
+        déduplication en 2 temps.
+        1. Si memory_key est fourni : cherche un fait existant avec la
+           MÊME memory_key, pour le même user_id/scope -- si trouvé, le
+           fait est MIS À JOUR EN PLACE (même id conservé), jamais
+           dupliqué. C'est le mécanisme principal, le plus fiable.
+        2. Si memory_key est absent, ou qu'aucun match n'est trouvé par
+           memory_key : filet de repli sur l'ancienne logique
+           type+category (comparaison texte, moins fiable mais mieux
+           que rien).
+        Si aucun des deux ne trouve de correspondance, un nouveau fait
+        est créé.
+
+        embedding (optionnel) : si fourni, un embedding est
+        créé/mis à jour EN PLACE, lié à ce fait via user_memory_id --
+        jamais un nouvel embedding séparé créé à côté d'un ancien pour
+        le même fait. C'est ce lien qui élimine structurellement le
+        risque de deux souvenirs vectoriels contradictoires coexistant
+        (ex: "objectif 100kg" et "objectif 140kg" tous les deux
+        présents en mémoire vectorielle en même temps) -- voir
+        MemoryEmbedding.user_memory_id dans models.py."""
+        from minitoken.database.models import USER_MEMORY_TYPES
+
         if scope not in self.config.agent_scopes:
             raise ValueError(
                 f"scope '{scope}' invalide. Scopes autorisés par la config : "
                 f"{self.config.agent_scopes}"
             )
 
-        with self._session() as session:
-            record = self.models.UserMemory(
-                user_id=user_id,
-                fact=fact,
-                scope=scope,
-                category=category,
-                source_conversation_id=source_conversation_id,
-                confidence=confidence,
+        if type not in USER_MEMORY_TYPES:
+            raise ValueError(
+                f"type '{type}' invalide. Types autorisés : {USER_MEMORY_TYPES}"
             )
-            session.add(record)
+
+        with self._session() as session:
+            existing_record = None
+
+            if memory_key:
+                existing_record = (
+                    session.query(self.models.UserMemory)
+                    .filter(
+                        self.models.UserMemory.user_id == user_id,
+                        self.models.UserMemory.scope == scope,
+                        self.models.UserMemory.memory_key == memory_key,
+                    )
+                    .one_or_none()
+                )
+
+            if existing_record is None and category:
+                # Filet de repli : ancienne logique type+category, pour
+                # les faits sans memory_key (rétrocompatibilité) ou si
+                # le LLM a changé de memory_key entre deux appels malgré
+                # les instructions du prompt.
+                existing_record = (
+                    session.query(self.models.UserMemory)
+                    .filter(
+                        self.models.UserMemory.user_id == user_id,
+                        self.models.UserMemory.scope == scope,
+                        self.models.UserMemory.type == type,
+                        self.models.UserMemory.category == category,
+                    )
+                    .first()
+                )
+
+            if existing_record is not None:
+                # MISE À JOUR EN PLACE -- même id conservé, jamais de
+                # doublon créé.
+                existing_record.fact = fact
+                existing_record.type = type
+                existing_record.category = category
+                if memory_key:
+                    existing_record.memory_key = memory_key
+                if confidence is not None:
+                    existing_record.confidence = confidence
+                if source_conversation_id is not None:
+                    existing_record.source_conversation_id = source_conversation_id
+                session.flush()
+                record = existing_record
+            else:
+                record = self.models.UserMemory(
+                    user_id=user_id,
+                    fact=fact,
+                    scope=scope,
+                    type=type,
+                    category=category,
+                    memory_key=memory_key,
+                    source_conversation_id=source_conversation_id,
+                    confidence=confidence,
+                )
+                session.add(record)
+                session.flush()
+
+            if embedding is not None:
+                linked_embedding = (
+                    session.query(self.models.MemoryEmbedding)
+                    .filter(self.models.MemoryEmbedding.user_memory_id == record.id)
+                    .one_or_none()
+                )
+
+                reflected_table = Table(
+                    "memory_embeddings", MetaData(), autoload_with=self._engine
+                )
+
+                if linked_embedding is not None:
+                    # Met à jour le vecteur ET le texte de l'embedding
+                    # déjà lié -- jamais un second embedding créé pour
+                    # le même fait.
+                    session.execute(
+                        reflected_table.update()
+                        .where(reflected_table.c.id == linked_embedding.id)
+                        .values(embedding=embedding, content=fact)
+                    )
+                else:
+                    new_embedding = self.models.MemoryEmbedding(
+                        user_id=user_id,
+                        conversation_id=source_conversation_id,
+                        scope=scope,
+                        content=fact,
+                        user_memory_id=record.id,
+                    )
+                    session.add(new_embedding)
+                    session.flush()
+                    session.execute(
+                        reflected_table.update()
+                        .where(reflected_table.c.id == new_embedding.id)
+                        .values(embedding=embedding)
+                    )
+
             session.commit()
             session.refresh(record)
             return record
 
     def get_user_facts(self, *, user_id: uuid.UUID, scopes: list[str], limit: int):
         """
-        Récupère les faits les plus récents d'un utilisateur, filtrés par
-        une liste de scopes (typiquement ["global", "<nom_agent>"]).
-        Limité à `limit` faits (les plus récents en priorité, via
-        updated_at), pour éviter qu'un historique accumulé sur des mois
-        d'usage ne fasse exploser le budget de tokens à chaque appel.
+        Récupère les faits d'un utilisateur, filtrés par une liste de
+        scopes (typiquement ["global", "<nom_agent>"]).
+
+        POINT robustesse mémoire : distingue les faits "global" (prénom,
+        préférences durables -- toujours pertinents peu importe le
+        sujet de la conversation, censés rester peu nombreux) des faits
+        "agent_specific" (objectifs/contraintes propres à ce domaine
+        précis). Les faits globaux sont TOUJOURS inclus intégralement --
+        jamais tronqués par `limit`, qui ne s'applique qu'aux faits
+        agent_specific. Sans cette distinction, un historique
+        agent_specific volumineux pourrait évincer un fait global
+        essentiel (comme le prénom) simplement parce qu'il est plus
+        ancien que `limit` autres faits accumulés depuis.
+
+        `limit` s'applique uniquement aux faits agent_specific, les plus
+        récents en priorité (via updated_at) -- évite qu'un historique
+        accumulé sur des mois d'usage ne fasse exploser le budget de
+        tokens à chaque appel, sans pour autant risquer de perdre les
+        faits globaux qui doivent toujours être présents.
         """
         with self._session() as session:
-            return (
+            global_facts = (
                 session.query(self.models.UserMemory)
                 .filter(
                     self.models.UserMemory.user_id == user_id,
-                    self.models.UserMemory.scope.in_(scopes),
+                    self.models.UserMemory.scope == "global",
                 )
                 .order_by(self.models.UserMemory.updated_at.desc())
-                .limit(limit)
                 .all()
             )
+
+            agent_specific_scopes = [s for s in scopes if s != "global"]
+            agent_specific_facts = []
+            if agent_specific_scopes:
+                remaining_limit = max(0, limit - len(global_facts))
+                agent_specific_facts = (
+                    session.query(self.models.UserMemory)
+                    .filter(
+                        self.models.UserMemory.user_id == user_id,
+                        self.models.UserMemory.scope.in_(agent_specific_scopes),
+                    )
+                    .order_by(self.models.UserMemory.updated_at.desc())
+                    .limit(remaining_limit)
+                    .all()
+                )
+
+            return global_facts + agent_specific_facts
 
     # ------------------------------------------------------------------
     # memory_embeddings
@@ -201,7 +371,20 @@ class MinitokenRepository:
         embedding: list[float],
         conversation_id: uuid.UUID | None = None,
         importance_score: int | None = None,
+        max_per_user_scope: int = 500,
     ):
+        """
+        POINT robustesse mémoire (point 5) : après insertion, si le
+        nombre d'embeddings pour ce user_id/scope dépasse
+        max_per_user_scope, les plus anciens en trop sont supprimés --
+        nettoyage "au fil de l'eau", pas besoin d'une tâche de fond
+        séparée comme pour pending_actions. Cap par utilisateur/scope
+        (pas un TTL par âge) : un utilisateur actif après une longue
+        pause ne perd jamais ses souvenirs juste parce qu'ils sont
+        vieux -- seul le VOLUME accumulé déclenche un nettoyage, jamais
+        le temps écoulé. Empêche la table de grossir indéfiniment (coût
+        de stockage, lenteur croissante de search_similar_embeddings au
+        fil des mois d'usage réel)."""
         if scope not in self.config.agent_scopes:
             raise ValueError(
                 f"scope '{scope}' invalide. Scopes autorisés par la config : "
@@ -231,6 +414,32 @@ class MinitokenRepository:
                 .where(reflected_table.c.id == record.id)
                 .values(embedding=embedding)
             )
+
+            total_count = (
+                session.query(self.models.MemoryEmbedding)
+                .filter(
+                    self.models.MemoryEmbedding.user_id == user_id,
+                    self.models.MemoryEmbedding.scope == scope,
+                )
+                .count()
+            )
+            if total_count > max_per_user_scope:
+                excess = total_count - max_per_user_scope
+                old_ids = [
+                    row.id
+                    for row in session.query(self.models.MemoryEmbedding.id)
+                    .filter(
+                        self.models.MemoryEmbedding.user_id == user_id,
+                        self.models.MemoryEmbedding.scope == scope,
+                    )
+                    .order_by(self.models.MemoryEmbedding.created_at.asc())
+                    .limit(excess)
+                    .all()
+                ]
+                session.query(self.models.MemoryEmbedding).filter(
+                    self.models.MemoryEmbedding.id.in_(old_ids)
+                ).delete(synchronize_session=False)
+
             session.commit()
             session.refresh(record)
             return record
