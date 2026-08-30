@@ -134,6 +134,76 @@ class MinitokenRepository:
                 .one()
             )
 
+    def set_conversation_state(
+        self,
+        *,
+        conversation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        state: dict,
+        merge: bool = True,
+    ):
+        """Écrit conversation_state indépendamment du résumé -- ne touche
+        jamais summary/message_count_at_last_summary, contrairement à
+        upsert_conversation_memory qui les gère ensemble (les relit et les
+        repasse inchangés dans le même upsert atomique, pour rester cohérent
+        avec le pattern ON CONFLICT DO UPDATE déjà en place, pas une seconde
+        logique SQL en parallèle).
+
+        merge=True (défaut) : fusionne clé par clé avec l'état existant --
+        les clés fournies dans `state` écrasent leur valeur précédente, les
+        clés absentes de `state` mais déjà présentes sont conservées
+        intactes. C'est ce qui empêche qu'un nouvel appel partiel (ex:
+        seulement {"jour": "Dimanche"}) efface une valeur déjà connue (ex:
+        {"reps": "6-10"}) obtenue lors d'un appel précédent.
+
+        merge=False : remplace intégralement l'état existant par `state` --
+        utilisé notamment pour le vider (state={}) une fois la tâche
+        confirmée ou rejetée."""
+        import json
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        with self._session() as session:
+            existing = (
+                session.query(self.models.ConversationMemory)
+                .filter_by(conversation_id=conversation_id)
+                .one_or_none()
+            )
+            existing_summary = existing.summary if existing else ""
+            existing_state = existing.conversation_state if existing else {}
+            existing_count = existing.message_count_at_last_summary if existing else 0
+
+            if merge:
+                new_state = {**(existing_state or {}), **state}
+            else:
+                new_state = state
+
+            table = self.models.ConversationMemory.__table__
+
+            stmt = pg_insert(table).values(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                summary=existing_summary,
+                conversation_state=new_state,
+                message_count_at_last_summary=existing_count,
+                version=1,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["conversation_id"],
+                set_={
+                    "conversation_state": stmt.excluded.conversation_state,
+                    "version": table.c.version + 1,
+                },
+            )
+
+            session.execute(stmt)
+            session.commit()
+
+            return (
+                session.query(self.models.ConversationMemory)
+                .filter_by(conversation_id=conversation_id)
+                .one()
+            )
+
     # ------------------------------------------------------------------
     # user_memory
     # ------------------------------------------------------------------

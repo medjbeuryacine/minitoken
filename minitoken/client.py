@@ -228,6 +228,7 @@ class MinitokenClient:
 
         conversation_memory = self.repository.get_conversation_memory(conversation_id)
         existing_summary = conversation_memory.summary if conversation_memory else ""
+        existing_state = conversation_memory.conversation_state if conversation_memory else {}
 
         effective_max_facts = max_user_facts if max_user_facts is not None else self.config.max_user_facts
         user_facts = self.repository.get_user_facts(
@@ -252,6 +253,7 @@ class MinitokenClient:
             summary=existing_summary,
             structured_facts=[f.fact for f in user_facts],
             vector_memories=vector_memories,
+            conversation_state=existing_state or {},
         )
 
         effective_budget = budget_override if budget_override is not None else self.config.token_budget_max
@@ -265,6 +267,32 @@ class MinitokenClient:
     # ------------------------------------------------------------------
     # Après la réponse principale : mise à jour de la mémoire (tâche de fond)
     # ------------------------------------------------------------------
+
+    def set_conversation_state(
+        self,
+        *,
+        conversation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        state: dict,
+        merge: bool = True,
+    ) -> dict:
+        """Écrit/complète l'état structuré de la tâche en cours pour cette
+        conversation -- appelé par l'application hôte à chaque fois qu'une
+        valeur intermédiaire doit être préservée entre deux tours (ex: un
+        outil propose_* en attente de confirmation). Générique : minitoken
+        ne connaît jamais le contenu de `state`, seulement qu'il s'agit d'un
+        dict JSON à persister et réinjecter via get_context().
+
+        Toujours appelé de façon synchrone (pas en tâche de fond comme
+        record_exchange) -- contrairement au résumé/faits, cette écriture
+        doit être visible IMMÉDIATEMENT au tour suivant, jamais en retard."""
+        record = self.repository.set_conversation_state(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            state=state,
+            merge=merge,
+        )
+        return record.conversation_state
 
     def record_exchange(
         self,

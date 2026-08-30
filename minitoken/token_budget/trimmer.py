@@ -2,11 +2,15 @@
 Réduction automatique du contexte si le budget de tokens est dépassé.
 
 Ordre de priorité de coupe (du premier coupé au dernier, comme décidé) :
-  1. vector_memories   (le moins critique — souvenirs anciens, "bonus")
-  2. structured_facts  (les plus anciens/moins pertinents d'abord)
-  3. summary           (recompression, jamais suppression totale)
-  4. recent_messages   (jamais coupé — c'est le contexte immédiat requis
-                         pour comprendre la question actuelle)
+  1. vector_memories     (le moins critique — souvenirs anciens, "bonus")
+  2. structured_facts    (les plus anciens/moins pertinents d'abord)
+  3. summary              (recompression, jamais suppression totale)
+  4. recent_messages     (jamais coupé)
+  4. conversation_state  (jamais coupé, même priorité que recent_messages
+                           — état structuré de la tâche en cours, sa perte
+                           provoquerait exactement le bug qu'il existe
+                           pour corriger : une valeur oubliée entre deux
+                           tours de clarification)
 """
 
 from minitoken.providers.base import LLMProvider
@@ -36,6 +40,7 @@ def trim_to_budget(
         summary=bundle.summary,
         structured_facts=list(bundle.structured_facts),
         vector_memories=list(bundle.vector_memories),
+        conversation_state=dict(bundle.conversation_state),
     )
 
     report = count_bundle_tokens(provider=provider, bundle=working_bundle)
